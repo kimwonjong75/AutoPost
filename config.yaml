@@ -1,0 +1,51 @@
+api_keys:
+  openai: ''
+  claude: ''
+  gemini: REMOVED_GEMINI_API_KEY
+  replicate: ''
+  ideogram: ''
+defaults:
+  text_engine: gemini
+  text_model: gemini-2.5-flash
+  image_engine: gemini_flash_image
+  image_quality: medium
+  image_count: 3
+  info_image_count: 2
+  promo_image_count: 1
+google_sheet:
+  service_account_json: ./data/google-service-account.json
+  sheet_id: REMOVED_GOOGLE_SHEET_ID
+publish:
+  inter_blog_delay:
+  - 60
+  - 180
+  inter_post_delay:
+  - 30
+  - 90
+  action_delay:
+  - 1.5
+  - 4.0
+  max_retries: 2
+  browser_engine: undetected_chromedriver
+adb:
+  path: C:\platform-tools\adb.exe
+  airplane_on_wait: 8
+  airplane_off_wait: 20
+  ip_check_retries: 3
+paths:
+  image_dir: ./data/images
+  attachment_dir: ./data/attachments
+  cookie_dir: ./data/cookies
+  chrome_profiles_dir: ./chrome_profiles
+  log_dir: ./logs
+products:
+- name: 벅스델타
+- name: 뱀이싹
+blog_accounts:
+- blog_id: 블로그테스트_bearis
+  name: ''
+  naver_id: bearis
+  blog_url: ''
+  cookie_path: ''
+  status: 활성
+  posts_today: 0
