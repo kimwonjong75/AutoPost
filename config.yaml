@@ -27,6 +27,13 @@ publish:
   - 4.0
   max_retries: 2
   browser_engine: undetected_chromedriver
+  warmup:
+    enabled: true
+    pages:
+    - https://www.naver.com
+    - https://blog.naver.com/{blog_id}
+  schedule:
+    time_jitter_minutes: 15
 adb:
   path: C:\platform-tools\adb.exe
   airplane_on_wait: 8

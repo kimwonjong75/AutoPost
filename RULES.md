@@ -81,7 +81,7 @@
 | `image_generator.py` | 이미지 다중 엔진 생성 | replicate, requests (Ideogram/Pollinations), Pillow | `IMAGE_ENGINE_CONFIGS` 구조 유지; `data/images/` 저장 경로 |
 | `image_prompt_builder.py` | 아파트 이미지 프롬프트 변형 생성 | — | `APARTMENT_LOCATIONS(30)`, `DIRT_LEVELS(5)`, `LIGHT_SOURCES(5)`, `ANGLES(5)` 배열 크기 |
 | `image_variable_analyzer.py` | AI로 최적 이미지 변수 자동 선택 | content_generator.py (LLM 재사용) | 엔진 우선순위 순서(비용 오름차순) 유지 |
-| `blog_publisher.py` | 네이버 블로그 Selenium 자동화 | undetected-chromedriver, pyperclip, models.py | 로그인→에디터→본문→이미지→태그→발행 순서; 쿠키 경로 |
+| `blog_publisher.py` | 네이버 블로그 Selenium 자동화 | undetected-chromedriver, pyperclip, models.py | 로그인→워밍업→에디터→본문→이미지→태그→발행 순서; 쿠키 경로; `_wait()` 가우시안 분포; `_warmup_session()` config.yaml `publish.warmup`; `_human_scroll()` 스크롤 모방 |
 | `attachment_manager.py` | 참고 파일(PDF·이미지·텍스트) 관리 | pdfplumber, Pillow, models.py | `MAX_EXTRACT_LEN=10_000`, `MAX_CONTEXT_PER_FILE=3_000` 제한값 |
 | `google_sheet.py` | Google Sheets 읽기/쓰기 | gspread, oauth2client | 4개 시트명 상수 변경 시 전체 참조 확인 |
 | `ip_changer.py` | ADB 비행기 모드로 모바일 IP 교체 | subprocess (adb), requests | Android SDK 버전 분기(12+ vs 레거시) |
@@ -187,10 +187,15 @@ ImageGenerator.generate(engine, prompt, options)
 
 **발행 딜레이 흐름:**
 ```
-블로그 계정 N개 × 기사 M개
-  ├─ 기사 간: inter_post_delay [30~90초] random
-  └─ 블로그 간: inter_blog_delay [60~180초] random
-  └─ 브라우저 액션 간: action_delay [1.5~4.0초] random
+발행 시작
+  ├─ 시간 분산: schedule.time_jitter_minutes [0~15분] random (발행 시작 전 1회)
+  ├─ 세션 워밍업: warmup.pages 순회 (로그인 후, 에디터 열기 전)
+  │
+  블로그 계정 N개 × 기사 M개
+    ├─ 기사 간: inter_post_delay [30~90초] random (가우시안)
+    └─ 블로그 간: inter_blog_delay [60~180초] random (가우시안)
+    └─ 브라우저 액션 간: action_delay [1.5~4.0초] random (가우시안)
+    └─ 스크롤 모방: _human_scroll() (에디터 열기 후, 본문 입력 후)
 ```
 
 ---
@@ -421,8 +426,15 @@ SHEET_PUBLISH_LOG = "발행기록"
 publish:
   inter_blog_delay: [60, 180]   # 초 [min, max]
   inter_post_delay: [30, 90]    # 초 [min, max]
-  action_delay: [1.5, 4.0]      # 초 [min, max]
+  action_delay: [1.5, 4.0]      # 초 [min, max] (가우시안 분포)
   max_retries: 2
+  warmup:
+    enabled: true               # 발행 전 세션 워밍업 활성화
+    pages:                      # 워밍업 방문 페이지 (blog_id 치환)
+      - https://www.naver.com
+      - https://blog.naver.com/{blog_id}
+  schedule:
+    time_jitter_minutes: 15     # 발행 시작 전 랜덤 대기 (0~15분)
 ```
 
 ---

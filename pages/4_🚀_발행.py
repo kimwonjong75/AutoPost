@@ -253,6 +253,18 @@ with tab_queue:
                     min_value=30, max_value=600, key="delay_max",
                 )
 
+            col_s4, _, _ = st.columns(3)
+            with col_s4:
+                schedule_config = config.get("publish", {}).get("schedule", {})
+                time_jitter = st.number_input(
+                    "시간 분산 (분)",
+                    value=schedule_config.get("time_jitter_minutes", 15),
+                    min_value=0,
+                    max_value=15,
+                    help="발행 시작 전 0~N분 랜덤 대기. 매번 다른 시간에 발행되어 패턴 탐지를 회피.",
+                    key="time_jitter",
+                )
+
         # ─── 대기열 테이블 (체크박스) ───
         st.divider()
 
@@ -379,6 +391,28 @@ with tab_queue:
                 .where(GeneratedArticle.id.in_(selected_ids))
                 .order_by(GeneratedArticle.created_at)
             )
+
+            # 시간 분산 대기
+            if time_jitter > 0:
+                jitter_seconds = random.randint(0, time_jitter * 60)
+                if jitter_seconds > 0:
+                    jitter_minutes = jitter_seconds // 60
+                    jitter_remain = jitter_seconds % 60
+                    st.markdown(
+                        f'<div class="delay-banner">'
+                        f'🎲 시간 분산: {jitter_minutes}분 {jitter_remain}초 대기 후 발행 시작'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                    jitter_bar = st.progress(0, text=f"시간 분산 대기 중... {jitter_seconds}초")
+                    for sec in range(jitter_seconds):
+                        remaining = jitter_seconds - sec - 1
+                        jitter_bar.progress(
+                            (sec + 1) / jitter_seconds,
+                            text=f"시간 분산 대기 중... {remaining}초 남음",
+                        )
+                        time.sleep(1)
+                    jitter_bar.progress(1.0, text="시간 분산 대기 완료!")
 
             st.divider()
             st.subheader("발행 진행")

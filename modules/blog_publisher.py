@@ -56,6 +56,13 @@ class BlogPublisher:
         self.action_delay = tuple(publish_config.get("action_delay", [1.5, 4.0]))
         self.max_retries = publish_config.get("max_retries", 2)
 
+        warmup_config = publish_config.get("warmup", {})
+        self.warmup_enabled = warmup_config.get("enabled", True)
+        self.warmup_pages = warmup_config.get("pages", [
+            "https://www.naver.com",
+            "https://blog.naver.com/{blog_id}",
+        ])
+
         self.cookie_dir = Path(paths_config.get("cookie_dir", "./data/cookies"))
         self.chrome_profiles_dir = Path(
             paths_config.get("chrome_profiles_dir", "./chrome_profiles")
@@ -75,13 +82,38 @@ class BlogPublisher:
     # ──────────────────────────────────────────────
 
     def _wait(self, delay_range: tuple):
-        """랜덤 시간 대기"""
-        delay = random.uniform(*delay_range)
+        """가우시안 분포 랜덤 대기 (사람의 반응시간에 근사)"""
+        min_val, max_val = delay_range
+        mean = (min_val + max_val) / 2
+        sigma = (max_val - min_val) / 4
+        delay = random.gauss(mean, sigma)
+        delay = max(min_val, min(max_val, delay))
         time.sleep(delay)
 
     def _action_wait(self):
         """에디터 내 액션 간 짧은 대기"""
         self._wait(self.action_delay)
+
+    def _human_scroll(self, direction: str = "down", intensity: str = "light"):
+        """사람처럼 자연스러운 스크롤 동작"""
+        try:
+            if intensity == "light":
+                distance = random.randint(100, 300)
+            else:
+                distance = random.randint(300, 600)
+
+            if direction == "up":
+                distance = -distance
+
+            steps = random.randint(2, 3)
+            for _ in range(steps):
+                partial = distance // steps + random.randint(-20, 20)
+                self.driver.execute_script(f"window.scrollBy(0, {partial});")
+                time.sleep(random.uniform(0.1, 0.3))
+
+            time.sleep(random.uniform(0.3, 0.8))
+        except Exception:
+            logger.debug("스크롤 실패 (무시)")
 
     # ──────────────────────────────────────────────
     # 브라우저 관리
@@ -249,6 +281,27 @@ class BlogPublisher:
         return False
 
     # ──────────────────────────────────────────────
+    # 세션 워밍업
+    # ──────────────────────────────────────────────
+
+    def _warmup_session(self, blog_id: str):
+        """발행 전 자연스러운 브라우징 세션 생성"""
+        if not self.warmup_enabled:
+            return
+        for url_template in self.warmup_pages:
+            url = url_template.format(blog_id=blog_id)
+            try:
+                self.driver.get(url)
+                self._action_wait()
+                self.driver.execute_script(
+                    "window.scrollTo(0, Math.random() * 300 + 100);"
+                )
+                self._action_wait()
+            except Exception:
+                logger.debug("워밍업 페이지 로드 실패 (무시): %s", url)
+        logger.info("세션 워밍업 완료: %s", blog_id)
+
+    # ──────────────────────────────────────────────
     # 스마트에디터 글 작성
     # ──────────────────────────────────────────────
 
@@ -266,6 +319,7 @@ class BlogPublisher:
                     (By.CSS_SELECTOR, ".se-component-content, .blog_editor, iframe[id*='editor']")
                 )
             )
+            self._human_scroll("down", "light")
             logger.info("에디터 열기 성공: %s", blog_id)
             return True
         except Exception as e:
@@ -317,6 +371,7 @@ class BlogPublisher:
             body_area.send_keys(Keys.CONTROL, "v")
             self._action_wait()
 
+            self._human_scroll("down", "light")
             logger.info("본문 입력 완료 (길이: %d)", len(body_html))
             return True
         except Exception as e:
@@ -491,6 +546,9 @@ class BlogPublisher:
                 return result
 
             self._action_wait()
+
+            # 2-1. 세션 워밍업
+            self._warmup_session(blog_id)
 
             # 3. 에디터 열기
             if not self._open_editor(blog_id):
