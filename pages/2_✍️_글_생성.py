@@ -27,6 +27,7 @@ from modules.image_prompt_builder import (
     ImagePromptBuilder,
 )
 from modules.image_variable_analyzer import ImageVariableAnalyzer
+from modules.seo_optimizer import SeoOptimizer
 
 # ──────────────────────────────────────────────
 # 페이지 설정
@@ -553,7 +554,63 @@ if st.button(
 # ══════════════════════════════════════════════
 if st.session_state.get("gen_results"):
     st.markdown("---")
-    st.markdown("### 생성 결과")
+
+    # ── SEO 일괄 최적화 ──
+    seo_optimizer = SeoOptimizer(config)
+    seo_ep = seo_optimizer.pick_engine()
+
+    seo_header_col, seo_btn_col = st.columns([2, 1])
+    with seo_header_col:
+        st.markdown("### 생성 결과")
+    with seo_btn_col:
+        successful_for_seo = [
+            r for r in st.session_state["gen_results"] if r.get("_status") == "성공"
+        ]
+        seo_enabled = bool(seo_ep) and len(successful_for_seo) > 0
+
+        if seo_ep:
+            seo_cost_each = seo_optimizer.get_estimated_cost()
+            seo_btn_label = f"SEO 일괄 최적화 ({len(successful_for_seo)}건, ~₩{seo_cost_each * len(successful_for_seo):.0f})"
+        else:
+            seo_btn_label = "SEO 최적화 (API 키 필요)"
+
+        if st.button(seo_btn_label, disabled=not seo_enabled, key="btn_seo_all"):
+            seo_progress = st.progress(0, text="SEO 최적화 중...")
+            seo_count = 0
+            for r in st.session_state["gen_results"]:
+                if r.get("_status") != "성공":
+                    continue
+                seo_result = seo_optimizer.optimize(
+                    title=r.get("title", ""),
+                    tags=r.get("tags", []),
+                    keyword=r.get("_keyword", ""),
+                )
+                if seo_result["optimized"]:
+                    r["title"] = seo_result["title"]
+                    r["tags"] = seo_result["tags"]
+                    r["_seo_changes"] = seo_result["changes"]
+                    r["_seo_cost"] = seo_result["cost_estimate"]
+
+                    # DB 업데이트
+                    article_id = r.get("_article_id")
+                    if article_id:
+                        try:
+                            article_obj = GeneratedArticle.get_by_id(article_id)
+                            article_obj.title = seo_result["title"]
+                            article_obj.set_tags_list(seo_result["tags"])
+                            article_obj.cost_estimate += seo_result["cost_estimate"]
+                            article_obj.save()
+                        except Exception:
+                            pass
+
+                seo_count += 1
+                seo_progress.progress(
+                    seo_count / len(successful_for_seo),
+                    text=f"SEO 최적화 {seo_count}/{len(successful_for_seo)}",
+                )
+            seo_progress.empty()
+            st.success(f"SEO 최적화 완료! {seo_count}건 처리")
+            st.rerun()
 
     for i, result in enumerate(st.session_state["gen_results"]):
         keyword = result.get("_keyword", "")
@@ -566,6 +623,10 @@ if st.session_state.get("gen_results"):
         tags = result.get("tags", [])
 
         with st.expander(f"**{result.get('title', '(제목 없음)')}** — {keyword}", expanded=(i == 0)):
+            # SEO 변경사항 안내
+            if result.get("_seo_changes") and result["_seo_changes"] != "변경 없음":
+                st.info(f"SEO 최적화 적용됨: {result['_seo_changes']} (₩{result.get('_seo_cost', 0):.1f})")
+
             # 메타 정보
             meta_parts = []
             if meta.get("engine"):
@@ -811,20 +872,21 @@ if successful_results:
                     st.session_state["img_vars"][vars_key] = preview_vars
 
                     prompts = img_builder.build_apartment_prompts(preview_vars, count=r_img_count)
-                    generated = []
-                    prog = st.progress(0, text="이미지 생성 중...")
+                    prog = st.progress(0, text="이미지 병렬 생성 중...")
 
-                    for i, pd in enumerate(prompts):
-                        try:
-                            img_result = img_generator.generate(
-                                engine=_selected_img_engine,
-                                prompt=pd["prompt"],
-                                options={},
-                            )
-                            img_result["light_kr"] = pd["light_kr"]
-                            img_result["angle_kr"] = pd["angle_kr"]
+                    def _update_progress(done, total):
+                        prog.progress(done / total, text=f"{done}/{total} 완료")
 
-                            # DB 저장
+                    batch_results = img_generator.generate_batch(
+                        engine=_selected_img_engine,
+                        prompts=prompts,
+                        options={},
+                        on_progress=_update_progress,
+                    )
+
+                    # DB 저장
+                    for img_result in batch_results:
+                        if "error" not in img_result:
                             GeneratedImage.create(
                                 keyword_id=result.get("_keyword_id", ""),
                                 article=result.get("_article_id"),
@@ -835,13 +897,9 @@ if successful_results:
                                 height=img_result.get("height", 0),
                                 cost_estimate=img_result.get("cost_estimate", 0),
                             )
-                            generated.append(img_result)
-                        except Exception as exc:
-                            generated.append({"error": str(exc)})
-                        prog.progress((i + 1) / r_img_count, text=f"{i+1}/{r_img_count} 완료")
 
                     prog.empty()
-                    st.session_state["img_generated"][gen_key] = generated
+                    st.session_state["img_generated"][gen_key] = batch_results
                     st.rerun()
 
             with gc2:

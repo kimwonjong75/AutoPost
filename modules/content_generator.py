@@ -274,6 +274,7 @@ class ContentGenerator:
                 temperature=temperature,
                 max_output_tokens=max_tokens,
             ),
+            thinking_config={"thinking_budget": 0},
         )
 
         # Gemini의 safety 필터에 걸렸는지 확인

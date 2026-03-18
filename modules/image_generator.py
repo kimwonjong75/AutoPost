@@ -7,11 +7,15 @@ import base64
 import logging
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+# 병렬 이미지 생성 최대 워커 수 (API rate limit 고려)
+MAX_PARALLEL_WORKERS = 3
 
 # 엔진별 설정 정보
 IMAGE_ENGINE_CONFIGS = {
@@ -164,6 +168,73 @@ class ImageGenerator:
             options = {**options, "_engine": engine}
 
         return handler(prompt, options)
+
+    def generate_batch(
+        self,
+        engine: str,
+        prompts: list[dict],
+        options: dict | None = None,
+        max_workers: int | None = None,
+        on_progress: callable = None,
+    ) -> list[dict]:
+        """
+        여러 이미지를 병렬로 생성한다.
+
+        Args:
+            engine: 엔진 ID
+            prompts: [{"prompt": str, ...extra_meta}, ...] 형태의 프롬프트 목록
+            options: 엔진별 추가 옵션
+            max_workers: 최대 병렬 워커 수 (기본: MAX_PARALLEL_WORKERS)
+            on_progress: 진행률 콜백 fn(completed: int, total: int)
+
+        Returns:
+            [{"local_path": ..., "prompt_used": ..., ...} | {"error": str, ...}]
+            입력 prompts와 동일 순서로 반환. 실패 시 "error" 키 포함.
+        """
+        if options is None:
+            options = {}
+        if max_workers is None:
+            max_workers = MAX_PARALLEL_WORKERS
+
+        total = len(prompts)
+        workers = min(max_workers, total)
+        results: list[dict | None] = [None] * total
+        completed_count = 0
+
+        def _generate_single(idx: int, prompt_data: dict) -> tuple[int, dict]:
+            prompt_text = prompt_data["prompt"]
+            try:
+                result = self.generate(engine=engine, prompt=prompt_text, options=options)
+                # 프롬프트 메타데이터 병합 (light_kr, angle_kr 등)
+                for key, val in prompt_data.items():
+                    if key != "prompt":
+                        result[key] = val
+                return idx, result
+            except Exception as exc:
+                logger.error("이미지 생성 실패 [%d/%d]: %s", idx + 1, total, exc)
+                error_result = {"error": str(exc)}
+                for key, val in prompt_data.items():
+                    if key != "prompt":
+                        error_result[key] = val
+                return idx, error_result
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(_generate_single, i, pd): i
+                for i, pd in enumerate(prompts)
+            }
+
+            for future in as_completed(futures):
+                idx, result = future.result()
+                results[idx] = result
+                completed_count += 1
+                if on_progress:
+                    try:
+                        on_progress(completed_count, total)
+                    except Exception:
+                        pass
+
+        return results
 
     # ------------------------------------------------------------------
     # 로컬 이미지 불러오기

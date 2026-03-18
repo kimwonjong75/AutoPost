@@ -336,6 +336,101 @@ def get_recent_publish_logs(limit: int = 20) -> list[dict]:
         return []
 
 
+def get_daily_cost_trend(days: int = 7) -> list[dict]:
+    """최근 N일간 일별 비용 추이"""
+    result = []
+    today = datetime.date.today()
+    try:
+        for i in range(days - 1, -1, -1):
+            day = today - datetime.timedelta(days=i)
+            start = datetime.datetime.combine(day, datetime.time.min)
+            end = datetime.datetime.combine(day, datetime.time.max)
+
+            text_cost = 0.0
+            img_cost = 0.0
+
+            for a in GeneratedArticle.select().where(
+                GeneratedArticle.created_at.between(start, end)
+            ):
+                text_cost += a.cost_estimate
+
+            for img in GeneratedImage.select().where(
+                GeneratedImage.created_at.between(start, end)
+            ):
+                img_cost += img.cost_estimate
+
+            result.append({
+                "날짜": day.strftime("%m/%d"),
+                "텍스트 AI": round(text_cost, 1),
+                "이미지 AI": round(img_cost, 1),
+                "합계": round(text_cost + img_cost, 1),
+            })
+    except Exception:
+        pass
+    return result
+
+
+def get_daily_publish_trend(days: int = 7) -> list[dict]:
+    """최근 N일간 일별 발행 성공/실패 추이"""
+    result = []
+    today = datetime.date.today()
+    try:
+        for i in range(days - 1, -1, -1):
+            day = today - datetime.timedelta(days=i)
+            start = datetime.datetime.combine(day, datetime.time.min)
+            end = datetime.datetime.combine(day, datetime.time.max)
+
+            success = PublishLog.select().where(
+                PublishLog.published_at.between(start, end),
+                PublishLog.status == "성공",
+            ).count()
+
+            fail = PublishLog.select().where(
+                PublishLog.published_at.between(start, end),
+                PublishLog.status == "실패",
+            ).count()
+
+            total = success + fail
+            rate = round(success / total * 100, 1) if total > 0 else 0
+
+            result.append({
+                "날짜": day.strftime("%m/%d"),
+                "성공": success,
+                "실패": fail,
+                "성공률(%)": rate,
+            })
+    except Exception:
+        pass
+    return result
+
+
+def get_engine_stats() -> list[dict]:
+    """엔진별 사용 통계 (이번 달)"""
+    start, end = get_month_range()
+    stats = {}
+    try:
+        for a in GeneratedArticle.select().where(
+            GeneratedArticle.created_at.between(start, end)
+        ):
+            key = f"{a.engine}/{a.model}"
+            if key not in stats:
+                stats[key] = {"엔진": a.engine, "모델": a.model, "건수": 0, "비용(₩)": 0.0, "평균토큰": 0, "_tokens": 0}
+            stats[key]["건수"] += 1
+            stats[key]["비용(₩)"] += a.cost_estimate
+            stats[key]["_tokens"] += a.tokens_used
+
+        result = []
+        for s in stats.values():
+            s["평균토큰"] = round(s["_tokens"] / max(s["건수"], 1))
+            s["비용(₩)"] = round(s["비용(₩)"], 1)
+            del s["_tokens"]
+            result.append(s)
+
+        return sorted(result, key=lambda x: x["건수"], reverse=True)
+    except Exception:
+        return []
+
+
 # ──────────────────────────────────────────────
 # 페이지 렌더링
 # ──────────────────────────────────────────────
@@ -494,7 +589,43 @@ else:
     </div>
     """, unsafe_allow_html=True)
 
-# ── 4) 하단 요약 통계 ──
+# ── 4) 트렌드 차트 (7일간 비용 + 발행 추이) ──
+st.markdown('<div class="section-header">7일간 추이</div>', unsafe_allow_html=True)
+
+trend_left, trend_right = st.columns(2)
+
+with trend_left:
+    st.markdown("**일별 비용 추이**")
+    cost_trend = get_daily_cost_trend()
+    if cost_trend and any(d["합계"] > 0 for d in cost_trend):
+        import pandas as pd
+        df_cost = pd.DataFrame(cost_trend)
+        st.bar_chart(df_cost.set_index("날짜")[["텍스트 AI", "이미지 AI"]])
+    else:
+        st.caption("비용 데이터가 없습니다.")
+
+with trend_right:
+    st.markdown("**일별 발행 추이**")
+    pub_trend = get_daily_publish_trend()
+    if pub_trend and any(d["성공"] + d["실패"] > 0 for d in pub_trend):
+        import pandas as pd
+        df_pub = pd.DataFrame(pub_trend)
+        st.bar_chart(df_pub.set_index("날짜")[["성공", "실패"]])
+    else:
+        st.caption("발행 데이터가 없습니다.")
+
+# ── 5) 엔진별 사용 통계 ──
+st.markdown('<div class="section-header">이번 달 엔진별 사용 통계</div>', unsafe_allow_html=True)
+
+engine_stats = get_engine_stats()
+if engine_stats:
+    import pandas as pd
+    df_engines = pd.DataFrame(engine_stats)
+    st.dataframe(df_engines, use_container_width=True, hide_index=True)
+else:
+    st.caption("이번 달 사용 기록이 없습니다.")
+
+# ── 6) 하단 요약 통계 ──
 st.markdown("")
 st.divider()
 

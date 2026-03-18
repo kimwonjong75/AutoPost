@@ -34,6 +34,10 @@ publish:
     - https://blog.naver.com/{blog_id}
   schedule:
     time_jitter_minutes: 15
+  parallel_image_workers: 3
+seo:
+  enabled: true
+  auto_optimize: false
 adb:
   path: C:\platform-tools\adb.exe
   airplane_on_wait: 8

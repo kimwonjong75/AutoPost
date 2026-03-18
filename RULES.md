@@ -86,6 +86,8 @@
 | `google_sheet.py` | Google Sheets 읽기/쓰기 | gspread, oauth2client | 4개 시트명 상수 변경 시 전체 참조 확인 |
 | `ip_changer.py` | ADB 비행기 모드로 모바일 IP 교체 | subprocess (adb), requests | Android SDK 버전 분기(12+ vs 레거시) |
 | `prompt_loader.py` | 프롬프트 템플릿 로딩/저장, 기본값 관리 | — | `TEMPLATES_DIR`, `DEFAULT_*_PROMPT` 상수; `2_글_생성.py`와 `5_설정.py` 양쪽에서 사용 |
+| `seo_optimizer.py` | 생성된 글의 제목·태그 SEO 후처리 | content_generator.py (LLM 재사용) | 엔진 우선순위(비용 오름차순) 유지; `_fallback()` 실패 시 원본 반환 |
+| `scheduler.py` | APScheduler 기반 예약 발행 | apscheduler, blog_publisher.py, models.py | 싱글톤 패턴(`get_scheduler()`); 상태 파일 `data/scheduler_state.json`; 최대 스케줄 10개 |
 
 ### 페이지 (`pages/`)
 
@@ -96,6 +98,7 @@
 | `3_👁️_검토_수정.py` | 기사·이미지 리뷰·수정 | models.py, image_generator.py | 상태 전이 (생성완료→검토완료) |
 | `4_🚀_발행.py` | 발행 큐 관리·실행 | blog_publisher.py, ip_changer.py, models.py, google_sheet.py | 딜레이 설정, 단계별 피드백, PublishLog 기록 |
 | `5_⚙️_설정.py` | API 키·설정·ADB·상품 리스트 관리 | app.py (get/save config/secrets), attachment_manager.py, prompt_loader.py | 키 마스킹 표시; secrets.yaml 저장; 탭6 상품 리스트(config.yaml `products`, 최대 15개) |
+| `6_📅_예약발행.py` | 예약 발행 스케줄 등록·관리·실행 기록 | scheduler.py, models.py | 스케줄러 싱글톤; 최대 10개 스케줄; CronTrigger 사용 |
 
 ### 진입점 (`app.py`)
 
@@ -172,6 +175,32 @@ system_prompt(templates/*.txt) + user_prompt(키워드+첨부 컨텍스트)
     → _normalize_result() → 필드 보정
     → _calc_cost(tokens) → KRW 비용 계산
     → 결과: {title, body_html, tags, image_prompt, meta}
+```
+
+**SEO 후처리:**
+```
+pages/2_글_생성.py → SeoOptimizer.optimize(title, tags, keyword)
+    → ContentGenerator.generate() [cheapest LLM 자동 선택]
+    → DB: GeneratedArticle.title/tags 업데이트
+```
+
+**예약 발행:**
+```
+pages/6_예약발행.py → PublishScheduler (APScheduler BackgroundScheduler)
+    → CronTrigger(hour, minute, day_of_week)
+    → _execute_schedule()
+        → GeneratedArticle.select(status="검토완료")
+        → BlogPublisher.publish_single() × N건
+        → PublishLog 기록
+    → data/scheduler_state.json 상태 영속화
+```
+
+**이미지 병렬 생성:**
+```
+pages/2_글_생성.py → ImageGenerator.generate_batch()
+    → ThreadPoolExecutor(max_workers=3)
+    → generate() × N건 동시 실행
+    → on_progress 콜백 → Streamlit progress bar 업데이트
 ```
 
 **이미지 생성 상세:**
@@ -550,6 +579,22 @@ if response.prompt_feedback.block_reason:
 
 - `ImageVariableAnalyzer` 실패 시 `_default_vars()` 폴백 사용 (절대 예외 전파 금지)
 - `APARTMENT_LOCATIONS` 배열 수정 시 `image_variable_analyzer.py`의 ID 범위 검증 로직도 동시 수정 필요
+
+### 이미지 병렬 생성
+
+- `MAX_PARALLEL_WORKERS = 3` — API rate limit을 고려한 기본값. 무분별한 증가 금지
+- `generate_batch()` 내부에서 `ThreadPoolExecutor` 사용; Streamlit의 메인 스레드와 독립적
+- 파일 이름 충돌 방지: 각 엔진의 `_gen_*()` 메서드가 `time.time()` 기반 유니크 파일명 사용. 병렬 실행 시 밀리초 단위 충돌 가능성은 무시할 수준
+- `on_progress` 콜백은 예외를 먹으므로(try/except) UI 콜백 실패가 생성을 중단시키지 않음
+
+### 예약 발행 스케줄러
+
+- `get_scheduler()` 싱글톤 — 프로세스 내 하나의 인스턴스만 존재
+- 상태 파일: `data/scheduler_state.json` — 스케줄 정의 + 최근 100건 실행 기록 저장
+- Streamlit 재시작 시 `get_scheduler(config)` 호출로 자동 복원되지만, `start()` 호출은 수동 (UI에서 "스케줄러 시작" 버튼)
+- `_execute_schedule()`은 백그라운드 스레드에서 실행 — DB 접근 시 `init_db()` 재호출 필수
+- 최대 스케줄 수: `MAX_SCHEDULES = 10`
+- `coalesce=True` — 스케줄러가 꺼진 동안 놓친 실행은 1회만 보충 실행
 
 ### 비용 계산
 
