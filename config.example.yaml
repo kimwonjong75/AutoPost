@@ -1,7 +1,10 @@
+# config.yaml 템플릿 — 복사해서 실제 config.yaml 로 사용하세요 (cp config.example.yaml config.yaml)
+# 실제 config.yaml 은 .gitignore 처리되어 커밋되지 않습니다.
+# API 키·비밀번호는 여기(또는 config.yaml)가 아니라 secrets.yaml 에 넣으세요.
 api_keys:
   openai: ''
   claude: ''
-  gemini: 
+  gemini: ''
   replicate: ''
   ideogram: ''
 defaults:
@@ -14,7 +17,7 @@ defaults:
   promo_image_count: 1
 google_sheet:
   service_account_json: ./data/google-service-account.json
-  sheet_id: 
+  sheet_id: ''
 publish:
   inter_blog_delay:
   - 60
@@ -50,12 +53,11 @@ paths:
   chrome_profiles_dir: ./chrome_profiles
   log_dir: ./logs
 products:
-- name: 벅스델타
-- name: 뱀이싹
+- name: 상품명예시
 blog_accounts:
-- blog_id: 블로그테스트_bearis
+- blog_id: 블로그_예시
   name: ''
-  naver_id: bearis
+  naver_id: your_naver_id
   blog_url: ''
   cookie_path: ''
   status: 활성

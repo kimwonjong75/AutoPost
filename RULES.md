@@ -27,8 +27,9 @@
 
 - **SQLite** (`data/blog_auto.db`): 생성 기사·이미지·발행 로그 영구 저장
 - **Google Sheets**: 키워드 워크큐(`키워드`), 발행 감사 로그(`발행기록`), 블로그 계정(`블로그계정`), 상품정보(`상품정보`)
-- **`config.yaml`**: 엔진 기본값, 딜레이, 경로, 블로그 계정 메타
+- **`config.yaml`**: 엔진 기본값, 딜레이, 경로, 블로그 계정 메타 — `naver_id` 등 계정 정보 포함이라 **gitignore 처리(커밋 금지)**. 추적되는 템플릿은 `config.example.yaml`이며, 신규 환경은 이를 복사해 사용
 - **`secrets.yaml`**: API 키, 블로그 비밀번호 (절대 커밋 금지)
+- **비밀 커밋 방지**: `.githooks/pre-commit` 훅이 스테이징 변경에서 크리덴셜 패턴(AIza·sk-ant·sk-·r8_·private key 등)과 금지 파일명(secrets.yaml·config.yaml·replacements.txt 등)을 차단. `git config core.hooksPath .githooks`로 활성화(run.bat 자동 설정). 오탐 시 `--no-verify`
 
 ### 상태 관리 방식
 

@@ -1,0 +1,47 @@
+#!/bin/sh
+# ──────────────────────────────────────────────────────────────
+# 비밀 정보 커밋 차단 훅 (secret-scanning pre-commit hook)
+# 활성화: git config core.hooksPath .githooks   (run.bat 에서 자동 설정)
+# 오탐 시 우회: git commit --no-verify
+# ──────────────────────────────────────────────────────────────
+
+# 1) 실제 크리덴셜로 보이는 문자열 패턴
+#    (sk-ant-... 같은 짧은 플레이스홀더는 길이 조건으로 걸러짐)
+SECRET_PATTERN='AIza[0-9A-Za-z_-]{35}|sk-ant-[A-Za-z0-9_-]{24,}|sk-(proj-)?[A-Za-z0-9_-]{24,}|r8_[A-Za-z0-9]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|"private_key"[[:space:]]*:|ghp_[A-Za-z0-9]{30,}'
+
+# 2) 파일명 자체가 커밋되면 안 되는 것 (.gitignore 누락 대비 2차 방어)
+BLOCKED_FILES='^(secrets\.yaml|config\.yaml|replacements\.txt|user\.json|.*\.env|data/.*\.json|.*cookies.*\.json|.*service-account.*\.json)$'
+
+fail=0
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+
+# (1) 민감 파일명 차단
+for f in $staged; do
+  if printf '%s\n' "$f" | grep -qiE "$BLOCKED_FILES"; then
+    echo "  ✖ 차단: 커밋 금지 파일 -> $f"
+    fail=1
+  fi
+done
+
+# (2) 추가된 라인에서 비밀 패턴 스캔
+#     (+ 접두 필터는 BRE 기본 grep 사용 — MSYS grep -E 의 \+ 처리 회피)
+hits=$(git diff --cached --no-color -U0 --diff-filter=ACM \
+        | grep '^+' | grep -v '^+++' \
+        | grep -En "$SECRET_PATTERN" || true)
+if [ -n "$hits" ]; then
+  echo "  ✖ 차단: 스테이징된 변경에 크리덴셜로 보이는 문자열이 있습니다:"
+  printf '%s\n' "$hits" | sed 's/^/      /'
+  fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo ""
+  echo "  ──────────────────────────────────────────────"
+  echo "  커밋이 차단되었습니다."
+  echo "  · API 키/비밀번호는 secrets.yaml (gitignore됨) 에만 두세요."
+  echo "  · 오탐이면: git commit --no-verify"
+  echo "  ──────────────────────────────────────────────"
+  exit 1
+fi
+exit 0
