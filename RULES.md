@@ -13,7 +13,7 @@
 | 영역 | 라이브러리/버전 | 용도 |
 |---|---|---|
 | UI | Streamlit 1.40.0 | 웹 대시보드 |
-| 텍스트 AI | openai 1.60.0, anthropic 0.42.0, google-generativeai 0.8.0 | 다중 엔진 글 생성 |
+| 텍스트 AI | openai 1.60.0, anthropic 0.42.0, google-genai 2.8.0 | 다중 엔진 글 생성 |
 | 이미지 AI | replicate 1.0.0, Ideogram REST, Pollinations REST | 다중 엔진 이미지 생성 |
 | 브라우저 자동화 | undetected-chromedriver 3.5.5 + Selenium | 네이버 블로그 발행 |
 | ORM / DB | peewee 3.17.0, SQLite (`data/blog_auto.db`) | 영구 상태 저장 |
@@ -87,7 +87,8 @@
 | `ip_changer.py` | ADB 비행기 모드로 모바일 IP 교체 | subprocess (adb), requests | Android SDK 버전 분기(12+ vs 레거시) |
 | `prompt_loader.py` | 프롬프트 템플릿 로딩/저장, 기본값 관리 | — | `TEMPLATES_DIR`, `DEFAULT_*_PROMPT` 상수; `2_글_생성.py`와 `5_설정.py` 양쪽에서 사용 |
 | `seo_optimizer.py` | 생성된 글의 제목·태그 SEO 후처리 | content_generator.py (LLM 재사용) | 엔진 우선순위(비용 오름차순) 유지; `_fallback()` 실패 시 원본 반환 |
-| `scheduler.py` | APScheduler 기반 예약 발행 | apscheduler, blog_publisher.py, models.py | 싱글톤 패턴(`get_scheduler()`); 상태 파일 `data/scheduler_state.json`; 최대 스케줄 10개 |
+| `scheduler.py` | APScheduler 기반 예약 발행 | apscheduler, blog_publisher.py, publish_helpers.py, models.py | 싱글톤 패턴(`get_scheduler()`); 상태 파일 `data/scheduler_state.json`; 최대 스케줄 10개 |
+| `publish_helpers.py` | 발행 입력 매핑 공용 헬퍼(article→dict, 선택이미지 경로, blog_account 병합) | models.py | scheduler·pages/4 발행에서 공용 사용; Selenium 비의존이라 어디서나 가볍게 import |
 
 ### 페이지 (`pages/`)
 
@@ -96,7 +97,7 @@
 | `1_📊_대시보드.py` | 지표·발행 현황 표시 | models.py | 쿼리 성능 (인덱스 활용 여부) |
 | `2_✍️_글_생성.py` | 글·이미지 생성 워크플로우 | content_generator.py, image_generator.py, attachment_manager.py, prompt_loader.py, models.py | 비용 표시, 생성 후 DB 저장; 상품 선택 UI(config.yaml `products`) |
 | `3_👁️_검토_수정.py` | 기사·이미지 리뷰·수정 | models.py, image_generator.py | 상태 전이 (생성완료→검토완료) |
-| `4_🚀_발행.py` | 발행 큐 관리·실행 | blog_publisher.py, ip_changer.py, models.py, google_sheet.py | 딜레이 설정, 단계별 피드백, PublishLog 기록 |
+| `4_🚀_발행.py` | 발행 큐 관리·실행 | blog_publisher.py, publish_helpers.py, ip_changer.py, models.py, google_sheet.py | 딜레이 설정, 단계별 피드백, PublishLog 기록; 실제 발행 토글(기본 OFF=mock) |
 | `5_⚙️_설정.py` | API 키·설정·ADB·상품 리스트 관리 | app.py (get/save config/secrets), attachment_manager.py, prompt_loader.py | 키 마스킹 표시; secrets.yaml 저장; 탭6 상품 리스트(config.yaml `products`, 최대 15개) |
 | `6_📅_예약발행.py` | 예약 발행 스케줄 등록·관리·실행 기록 | scheduler.py, models.py | 스케줄러 싱글톤; 최대 10개 스케줄; CronTrigger 사용 |
 
@@ -131,7 +132,7 @@
    ├─[content_generator.py]
    │    ├─ OpenAI ChatCompletion
    │    ├─ Anthropic Messages
-   │    └─ Google Gemini GenerativeModel
+   │    └─ Google Gemini (google-genai Client.models.generate_content)
    │         └─ {title, body_html, tags, image_prompt}
    │
    ├─[image_variable_analyzer.py] → 최적 변수 자동 선택 (LLM 재사용)
@@ -190,8 +191,9 @@ pages/6_예약발행.py → PublishScheduler (APScheduler BackgroundScheduler)
     → CronTrigger(hour, minute, day_of_week)
     → _execute_schedule()
         → GeneratedArticle.select(status="검토완료")
-        → BlogPublisher.publish_single() × N건
-        → PublishLog 기록
+        → _article_to_dict() / _selected_image_paths() 로 dict·이미지 변환
+        → BlogPublisher.publish_with_retry() × N건
+        → status == PublishResult.SUCCESS 판정 → 발행완료/실패 전이 + PublishLog 기록
     → data/scheduler_state.json 상태 영속화
 ```
 
@@ -339,19 +341,16 @@ ImageEngineConfig = {
 ```
 
 ```python
-# blog_publisher.py — 반환 타입
+# blog_publisher.py — publish_single 반환 dict
+# (success / blog_id / ip_address / delay_seconds 키는 반환하지 않음)
 
-PublishResult = {
-    "success": bool,
-    "post_url": str | None,
-    "status": str,   # "성공" | "로그인실패" | "에디터실패" | "발행실패"
-    "blog_id": str,
-    "retry_count": int,
-    "delay_seconds": float,
-    "ip_address": str | None,
-    "screenshot_path": str | None,
-    "error_message": str | None
+PublishResultDict = {
+    "status": str,           # PublishResult 상수: "성공" | "로그인실패" | "에디터실패" | "발행실패" | "네트워크실패"
+    "post_url": str,         # 성공 시 URL, 그 외 ""
+    "error_message": str,    # 실패 사유, 성공 시 ""
+    "screenshot_path": str,  # 실패 시 스크린샷 경로, 그 외 ""
 }
+# publish_with_retry() 는 위 dict에 "retry_count": int 를 추가해 반환
 ```
 
 ```python
@@ -529,9 +528,9 @@ except json.JSONDecodeError:
 ### Gemini 안전 필터 탐지
 
 ```python
-# Gemini 응답에서 safety block 감지 후 로그 기록
-if response.prompt_feedback.block_reason:
-    raise ValueError(f"Gemini safety block: {response.prompt_feedback.block_reason}")
+# Gemini 응답에 candidates가 없으면 안전 필터 차단으로 간주 (google-genai)
+if not response.candidates:
+    raise RuntimeError("Gemini 응답이 안전 필터에 의해 차단되었습니다.")
 ```
 
 ---
@@ -550,6 +549,7 @@ if response.prompt_feedback.block_reason:
 - **상태 역전 금지**: `발행완료` → `검토완료` 등 역방향 전이 금지
 - **PublishLog 누락 금지**: 성공·실패 모두 반드시 `PublishLog.create()` 호출
 - **article.status 업데이트 누락**: 발행 성공 후 `GeneratedArticle.status = "발행완료"` + `article.save()` 반드시 쌍으로 처리
+- **발행 성공 판정**: `publish_single`/`publish_with_retry`는 `success`·`ip_address` 키를 반환하지 않는다. 성공 판정은 `result["status"] == PublishResult.SUCCESS`로만 하고, `PublishLog.ip_address`는 없으면 `""`로 기록
 
 ### 쿠키 파일
 
@@ -596,10 +596,17 @@ if response.prompt_feedback.block_reason:
 - 최대 스케줄 수: `MAX_SCHEDULES = 10`
 - `coalesce=True` — 스케줄러가 꺼진 동안 놓친 실행은 1회만 보충 실행
 
+### 수동 발행 (pages/4)
+
+- **실제 발행 토글**: 발행은 기본 OFF=시뮬레이션(`mock_publish_single`)이며, `real_publish` 토글을 켜야 `BlogPublisher.publish_with_retry`로 실제 업로드한다. 실수 발행 방지 장치이므로 기본값(OFF)을 임의로 바꾸지 말 것
+- **IP 변경 미수행**: 실제 발행 경로는 IP 변경(ip_changer)을 하지 않으므로 `PublishLog.ip_address`는 `""`로 기록된다(시뮬레이션 모드만 IP 변경 연출)
+- **공용 매핑 헬퍼**: blog_account·article dict·선택 이미지 변환은 `modules/publish_helpers.py`를 scheduler와 공용 사용 — 페이지/스케줄러에 중복 구현 금지
+
 ### AI 모델 파라미터
 
 - **Claude 샘플링 파라미터**: Opus 4.7+ 모델은 `temperature`/`top_p`/`top_k`를 전송하면 400을 반환한다. `_generate_claude()`는 `CLAUDE_NO_SAMPLING_MODELS`에 속한 모델에는 `temperature`를 보내지 않는다. 신규 Claude 모델 추가 시 샘플링 파라미터 허용 여부를 확인할 것.
 - **모델 ID 정확성**: `ENGINE_CONFIGS`의 모델 ID는 최신 GA 라인업 기준(예: `claude-opus-4-8`, `claude-sonnet-4-6`, `gemini-3.1-flash-lite`). 잘못된 날짜 접미사·폐기된 모델 ID는 404를 유발하므로 공식 모델 페이지에서 확인 후 등록.
+- **Gemini SDK**: 신 `google-genai` 사용(`from google import genai` → `genai.Client(...).models.generate_content(model=, contents=, config=types.GenerateContentConfig(...))`). 구 `google-generativeai`의 `GenerativeModel`·`generate_content(thinking_config=...)` 패턴은 동작하지 않음. thinking 비활성화가 필요하면 `config`에 `types.ThinkingConfig(thinking_budget=0)`를 넣되, 일부 모델(예: gemini-2.5-pro)은 thinking 비활성화를 허용하지 않으므로 주의.
 
 ### 비용 계산
 

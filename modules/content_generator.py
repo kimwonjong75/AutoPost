@@ -111,12 +111,11 @@ class ContentGenerator:
         gemini_key = self.api_keys.get("gemini", "")
         if gemini_key:
             try:
-                import google.generativeai as genai
-                genai.configure(api_key=gemini_key)
-                self._clients["gemini"] = genai
+                from google import genai
+                self._clients["gemini"] = genai.Client(api_key=gemini_key)
                 logger.info("Gemini 클라이언트 초기화 완료")
             except ImportError:
-                logger.warning("google-generativeai 패키지가 설치되어 있지 않습니다. pip install google-generativeai")
+                logger.warning("google-genai 패키지가 설치되어 있지 않습니다. pip install google-genai")
             except Exception as e:
                 logger.error("Gemini 클라이언트 초기화 실패: %s", e)
 
@@ -264,39 +263,39 @@ class ContentGenerator:
     # ------------------------------------------------------------------
 
     def _generate_gemini(self, model: str, system_prompt: str, user_prompt: str, options: dict) -> dict:
-        genai = self._clients["gemini"]
+        from google.genai import types
+
+        client = self._clients["gemini"]
 
         temperature = options.get("temperature", 0.7)
         max_tokens = options.get("max_tokens", 8000)
 
-        genai_model = genai.GenerativeModel(model)
         full_prompt = f"{system_prompt}\n\n---\n\n{user_prompt}"
 
-        response = genai_model.generate_content(
-            full_prompt,
-            generation_config=genai.GenerationConfig(
+        response = client.models.generate_content(
+            model=model,
+            contents=full_prompt,
+            config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 temperature=temperature,
                 max_output_tokens=max_tokens,
             ),
-            thinking_config={"thinking_budget": 0},
         )
 
-        # Gemini의 safety 필터에 걸렸는지 확인
+        # Gemini의 safety 필터에 걸렸는지 확인 (candidates 비어있음)
         if not response.candidates:
             raise RuntimeError("Gemini 응답이 안전 필터에 의해 차단되었습니다.")
 
         raw_text = response.text
         result = self._parse_json_response(raw_text)
 
-        total_tokens = 0
-        if hasattr(response, "usage_metadata") and response.usage_metadata:
-            total_tokens = getattr(response.usage_metadata, "total_token_count", 0)
-            input_tokens = getattr(response.usage_metadata, "prompt_token_count", 0)
-            output_tokens = getattr(response.usage_metadata, "candidates_token_count", 0)
+        usage = getattr(response, "usage_metadata", None)
+        if usage:
+            input_tokens = getattr(usage, "prompt_token_count", 0) or 0
+            output_tokens = getattr(usage, "candidates_token_count", 0) or 0
+            total_tokens = getattr(usage, "total_token_count", 0) or 0
         else:
-            input_tokens = 0
-            output_tokens = 0
+            input_tokens = output_tokens = total_tokens = 0
 
         result["meta"] = {
             "engine": "gemini",

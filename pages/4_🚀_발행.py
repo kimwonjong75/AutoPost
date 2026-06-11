@@ -22,6 +22,11 @@ from modules.models import (
     PublishLog,
     init_db,
 )
+from modules.publish_helpers import (
+    article_to_publish_dict,
+    build_blog_account,
+    selected_image_paths,
+)
 
 # ──────────────────────────────────────────────
 # 페이지 설정
@@ -187,15 +192,13 @@ def get_blog_accounts_for_publish() -> list[dict]:
     """발행에 사용할 블로그 계정 목록 (config.yaml + secrets.yaml 병합)"""
     cfg = get_config()
     secrets = get_secrets()
-    passwords = secrets.get("blog_passwords", {})
 
     result = []
     for acc in cfg.get("blog_accounts", []):
         if acc.get("status") == "활성":
-            bid = acc.get("blog_id", "")
-            merged = dict(acc)
-            merged["naver_pw"] = passwords.get(bid, "")
-            result.append(merged)
+            merged = build_blog_account(cfg, secrets, acc.get("blog_id", ""))
+            if merged:
+                result.append(merged)
     return result
 
 
@@ -359,6 +362,23 @@ with tab_queue:
         # ─── 선택 발행 버튼 ───
         st.divider()
 
+        # 실수 발행 방지: 기본 OFF=시뮬레이션, ON=실제 발행 (운영자가 명시적으로 켜야 함)
+        real_publish = st.toggle(
+            "⚠️ 실제 발행 모드",
+            value=False,
+            key="real_publish_toggle",
+            help="OFF: 시뮬레이션(실제 업로드 안 함) · ON: 네이버 블로그에 실제 발행",
+        )
+        if real_publish:
+            st.error(
+                "**실제 발행 모드가 켜져 있습니다.** 선택한 글이 네이버 블로그에 실제로 "
+                "업로드됩니다. (IP 변경은 수행하지 않고 현재 네트워크로 발행)"
+            )
+        else:
+            st.caption(
+                "🧪 시뮬레이션 모드 — 실제 업로드는 하지 않습니다. 실제로 올리려면 위 토글을 켜세요."
+            )
+
         selected_count = len(st.session_state.get("selected_articles", set()))
         col_pub_btn, col_pub_info = st.columns([1, 2])
 
@@ -423,149 +443,184 @@ with tab_queue:
 
             prev_blog_id = None
 
-            for idx, article in enumerate(articles_to_publish):
-                blog_id = st.session_state.get("default_blog", "blog_01")
-                blog_name = blog_options.get(blog_id, blog_id)
-                is_same_blog = (prev_blog_id == blog_id)
+            # 실제 발행 모드일 때만 BlogPublisher 준비 (Selenium 의존은 이 시점에만 import)
+            publisher = None
+            if real_publish:
+                try:
+                    from modules.blog_publisher import BlogPublisher
 
-                st.markdown(f"---\n**[{idx + 1}/{total}]** {article.title[:50]}")
-                step_container = st.empty()
-                status_text = st.empty()
-
-                # 블로그 전환 시 대기
-                if idx > 0:
-                    if is_same_blog:
-                        delay_range = config.get("publish", {}).get("inter_post_delay", [30, 90])
-                    else:
-                        delay_range = [publish_delay_min, publish_delay_max]
-
-                    delay = random.uniform(delay_range[0], delay_range[1])
-                    delay_int = int(delay)
-
-                    label = "같은 블로그 연속 발행" if is_same_blog else "블로그 전환"
-                    st.markdown(
-                        f'<div class="delay-banner">'
-                        f'⏱️ {label} 대기: {delay_int}초'
-                        f'</div>',
-                        unsafe_allow_html=True,
+                    publisher = BlogPublisher(config)
+                except ImportError as exc:
+                    st.error(
+                        f"실제 발행 모듈을 불러올 수 없습니다 "
+                        f"(undetected-chromedriver 미설치?): {exc}"
                     )
+                    st.stop()
 
-                    delay_bar = st.progress(0, text=f"대기 중... {delay_int}초 남음")
-                    for sec in range(delay_int):
-                        remaining = delay_int - sec - 1
-                        delay_bar.progress(
-                            (sec + 1) / delay_int,
-                            text=f"대기 중... {remaining}초 남음",
+            try:
+                for idx, article in enumerate(articles_to_publish):
+                    blog_id = st.session_state.get("default_blog", "blog_01")
+                    blog_name = blog_options.get(blog_id, blog_id)
+                    is_same_blog = (prev_blog_id == blog_id)
+
+                    st.markdown(f"---\n**[{idx + 1}/{total}]** {article.title[:50]}")
+                    step_container = st.empty()
+                    status_text = st.empty()
+
+                    # 글/블로그 간 대기
+                    delay_int = 0
+                    if idx > 0:
+                        if is_same_blog:
+                            delay_range = config.get("publish", {}).get("inter_post_delay", [30, 90])
+                        else:
+                            delay_range = [publish_delay_min, publish_delay_max]
+
+                        delay_int = int(random.uniform(delay_range[0], delay_range[1]))
+
+                        label = "같은 블로그 연속 발행" if is_same_blog else "블로그 전환"
+                        st.markdown(
+                            f'<div class="delay-banner">'
+                            f'⏱️ {label} 대기: {delay_int}초'
+                            f'</div>',
+                            unsafe_allow_html=True,
                         )
+
+                        delay_bar = st.progress(0, text=f"대기 중... {delay_int}초 남음")
+                        for sec in range(delay_int):
+                            remaining = delay_int - sec - 1
+                            delay_bar.progress(
+                                (sec + 1) / delay_int,
+                                text=f"대기 중... {remaining}초 남음",
+                            )
+                            time.sleep(1)
+                        delay_bar.progress(1.0, text="대기 완료!")
+
+                    if real_publish:
+                        # ─── 실제 발행: BlogPublisher.publish_with_retry ───
+                        ip_for_log = ""  # 실발행 경로는 IP 변경을 수행하지 않음
+                        step_container.markdown(render_step_indicator(5), unsafe_allow_html=True)
+                        status_text.caption(f"[{blog_name}] 실제 발행 중... (로그인→에디터→발행)")
+
+                        blog_account = build_blog_account(config, get_secrets(), blog_id)
+                        if not blog_account:
+                            pub_result = {
+                                "status": "발행실패",
+                                "post_url": "",
+                                "error_message": f"블로그 계정 '{blog_id}'을(를) 찾을 수 없습니다",
+                                "screenshot_path": "",
+                                "retry_count": 0,
+                            }
+                        else:
+                            with st.spinner(
+                                f"[{blog_name}] 네이버 블로그에 실제 발행 중... "
+                                f"(최대 {publisher.max_retries + 1}회 시도)"
+                            ):
+                                try:
+                                    pub_result = publisher.publish_with_retry(
+                                        blog_account=blog_account,
+                                        article=article_to_publish_dict(article),
+                                        image_paths=selected_image_paths(article),
+                                    )
+                                except Exception as exc:
+                                    pub_result = {
+                                        "status": "발행실패",
+                                        "post_url": "",
+                                        "error_message": str(exc),
+                                        "screenshot_path": "",
+                                        "retry_count": 0,
+                                    }
+                    else:
+                        # ─── 시뮬레이션(mock): 단계 연출 + IP 변경 시뮬 ───
+                        step_container.markdown(render_step_indicator(0), unsafe_allow_html=True)
+                        status_text.caption("비행기모드를 켜는 중...")
+                        time.sleep(1.5)
+
+                        step_container.markdown(render_step_indicator(1), unsafe_allow_html=True)
+                        status_text.caption("IP 할당 대기 중... (약 8초)")
+                        time.sleep(2)
+
+                        step_container.markdown(render_step_indicator(2), unsafe_allow_html=True)
+                        status_text.caption("비행기모드를 끄는 중...")
+                        time.sleep(1.5)
+
+                        step_container.markdown(render_step_indicator(3), unsafe_allow_html=True)
+                        ip_result = mock_change_ip()
+                        status_text.caption(
+                            f"IP 변경: {ip_result['old_ip']} → **{ip_result['new_ip']}**"
+                        )
+                        ip_for_log = ip_result["new_ip"]
                         time.sleep(1)
-                    delay_bar.progress(1.0, text="대기 완료!")
 
-                # ─── Step 1~3: IP 변경 ───
-                step_container.markdown(
-                    render_step_indicator(0), unsafe_allow_html=True
-                )
-                status_text.caption("비행기모드를 켜는 중...")
-                time.sleep(1.5)
+                        step_container.markdown(render_step_indicator(4), unsafe_allow_html=True)
+                        status_text.caption(f"[{blog_name}] 로그인 중...")
+                        time.sleep(1.5)
 
-                step_container.markdown(
-                    render_step_indicator(1), unsafe_allow_html=True
-                )
-                status_text.caption("IP 할당 대기 중... (약 8초)")
-                time.sleep(2)
+                        step_container.markdown(render_step_indicator(5), unsafe_allow_html=True)
+                        status_text.caption("에디터에 글 작성 중...")
+                        time.sleep(2)
 
-                step_container.markdown(
-                    render_step_indicator(2), unsafe_allow_html=True
-                )
-                status_text.caption("비행기모드를 끄는 중...")
-                time.sleep(1.5)
+                        step_container.markdown(render_step_indicator(6), unsafe_allow_html=True)
+                        status_text.caption("발행 버튼 클릭...")
+                        time.sleep(1.5)
 
-                # ─── Step 4: IP 확인 ───
-                step_container.markdown(
-                    render_step_indicator(3), unsafe_allow_html=True
-                )
-                ip_result = mock_change_ip()
-                status_text.caption(
-                    f"IP 변경: {ip_result['old_ip']} → **{ip_result['new_ip']}**"
-                )
-                time.sleep(1)
+                        pub_result = mock_publish_single(article, blog_id)
 
-                # ─── Step 5: 로그인 ───
-                step_container.markdown(
-                    render_step_indicator(4), unsafe_allow_html=True
-                )
-                status_text.caption(f"[{blog_name}] 로그인 중...")
-                time.sleep(1.5)
+                    # ─── 결과 처리 (mock/실발행 공통) ───
+                    if pub_result["status"] == "성공":
+                        step_container.markdown(render_step_indicator(7), unsafe_allow_html=True)
+                        status_text.caption(f"✅ 발행 성공! {pub_result.get('post_url', '')}")
+                        results_summary["성공"] += 1
 
-                # ─── Step 6: 글 작성 ───
-                step_container.markdown(
-                    render_step_indicator(5), unsafe_allow_html=True
-                )
-                status_text.caption("에디터에 글 작성 중...")
-                time.sleep(2)
+                        article.status = "발행완료"
+                        article.save()
 
-                # ─── Step 7: 발행 ───
-                step_container.markdown(
-                    render_step_indicator(6), unsafe_allow_html=True
-                )
-                status_text.caption("발행 버튼 클릭...")
-                time.sleep(1.5)
+                        PublishLog.create(
+                            blog_id=blog_id,
+                            keyword_id=article.keyword_id,
+                            article=article,
+                            title=article.title,
+                            post_url=pub_result.get("post_url", ""),
+                            ip_address=ip_for_log,
+                            status="성공",
+                            error_message="",
+                            screenshot_path="",
+                            retry_count=pub_result.get("retry_count", 0),
+                            delay_seconds=delay_int,
+                        )
+                    else:
+                        step_container.markdown(
+                            render_step_indicator(6, failed=True), unsafe_allow_html=True
+                        )
+                        status_text.caption(f"❌ 발행 실패: {pub_result.get('error_message', '')}")
+                        if pub_result.get("screenshot_path"):
+                            st.caption(f"📸 오류 스크린샷: {pub_result['screenshot_path']}")
+                        results_summary["실패"] += 1
 
-                # ─── 발행 결과 (Mock) ───
-                pub_result = mock_publish_single(article, blog_id)
+                        article.status = "실패"
+                        article.save()
 
-                if pub_result["status"] == "성공":
-                    step_container.markdown(
-                        render_step_indicator(7), unsafe_allow_html=True
+                        PublishLog.create(
+                            blog_id=blog_id,
+                            keyword_id=article.keyword_id,
+                            article=article,
+                            title=article.title,
+                            post_url=pub_result.get("post_url", ""),
+                            ip_address=ip_for_log,
+                            status="실패",
+                            error_message=pub_result.get("error_message", ""),
+                            screenshot_path=pub_result.get("screenshot_path", ""),
+                            retry_count=pub_result.get("retry_count", 0),
+                            delay_seconds=delay_int,
+                        )
+
+                    prev_blog_id = blog_id
+                    overall_progress.progress(
+                        (idx + 1) / total,
+                        text=f"{idx + 1} / {total} 완료",
                     )
-                    status_text.caption(f"✅ 발행 성공! {pub_result['post_url']}")
-                    results_summary["성공"] += 1
-
-                    article.status = "발행완료"
-                    article.save()
-
-                    # 발행 기록 저장
-                    PublishLog.create(
-                        blog_id=blog_id,
-                        keyword_id=article.keyword_id,
-                        article=article,
-                        title=article.title,
-                        post_url=pub_result["post_url"],
-                        ip_address=ip_result["new_ip"],
-                        status="성공",
-                        error_message="",
-                        screenshot_path="",
-                        retry_count=pub_result["retry_count"],
-                        delay_seconds=int(delay) if idx > 0 else 0,
-                    )
-                else:
-                    step_container.markdown(
-                        render_step_indicator(6, failed=True), unsafe_allow_html=True
-                    )
-                    status_text.caption(f"❌ 발행 실패: {pub_result['error_message']}")
-                    results_summary["실패"] += 1
-
-                    article.status = "실패"
-                    article.save()
-
-                    PublishLog.create(
-                        blog_id=blog_id,
-                        keyword_id=article.keyword_id,
-                        article=article,
-                        title=article.title,
-                        post_url="",
-                        ip_address=ip_result.get("new_ip", ""),
-                        status="실패",
-                        error_message=pub_result["error_message"],
-                        screenshot_path=pub_result.get("screenshot_path", ""),
-                        retry_count=pub_result["retry_count"],
-                        delay_seconds=int(delay) if idx > 0 else 0,
-                    )
-
-                prev_blog_id = blog_id
-                overall_progress.progress(
-                    (idx + 1) / total,
-                    text=f"{idx + 1} / {total} 완료",
-                )
+            finally:
+                if publisher:
+                    publisher.close()
 
             # ─── 발행 완료 요약 ───
             st.divider()

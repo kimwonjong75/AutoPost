@@ -621,40 +621,43 @@ class BlogPublisher:
         """
         last_result = None
 
-        for attempt in range(self.max_retries + 1):
-            if attempt > 0:
-                logger.info("재시도 %d/%d: %s", attempt, self.max_retries,
-                            blog_account["blog_id"])
+        try:
+            for attempt in range(self.max_retries + 1):
+                if attempt > 0:
+                    logger.info("재시도 %d/%d: %s", attempt, self.max_retries,
+                                blog_account["blog_id"])
 
-            # 이전 시도에서 브라우저 정리
+                # 이전 시도에서 브라우저 정리
+                self._quit_driver()
+
+                result = self.publish_single(blog_account, article, image_paths)
+                result["retry_count"] = attempt
+                last_result = result
+
+                if result["status"] == PublishResult.SUCCESS:
+                    return result
+
+                # 상태별 복구 시도
+                if result["status"] == PublishResult.LOGIN_FAIL:
+                    self._delete_cookies(blog_account["blog_id"])
+                    logger.info("쿠키 삭제 후 재시도")
+
+                elif result["status"] == PublishResult.NETWORK_FAIL and ip_changer:
+                    logger.info("IP 변경 후 재시도")
+                    ip_changer.change_ip()
+
+                elif result["status"] in (PublishResult.EDITOR_FAIL, PublishResult.PUBLISH_FAIL):
+                    logger.info("에디터/발행 실패, 브라우저 재시작 후 재시도")
+
+                self._action_wait()
+
+            # 최종 실패
+            logger.error("최종 발행 실패 (%d회 시도): %s",
+                          self.max_retries + 1, blog_account["blog_id"])
+            return last_result
+        finally:
+            # 성공/실패/예외 모든 경로에서 드라이버 정리 (성공 시 드라이버 누수 방지)
             self._quit_driver()
-
-            result = self.publish_single(blog_account, article, image_paths)
-            result["retry_count"] = attempt
-            last_result = result
-
-            if result["status"] == PublishResult.SUCCESS:
-                return result
-
-            # 상태별 복구 시도
-            if result["status"] == PublishResult.LOGIN_FAIL:
-                self._delete_cookies(blog_account["blog_id"])
-                logger.info("쿠키 삭제 후 재시도")
-
-            elif result["status"] == PublishResult.NETWORK_FAIL and ip_changer:
-                logger.info("IP 변경 후 재시도")
-                ip_changer.change_ip()
-
-            elif result["status"] in (PublishResult.EDITOR_FAIL, PublishResult.PUBLISH_FAIL):
-                logger.info("에디터/발행 실패, 브라우저 재시작 후 재시도")
-
-            self._action_wait()
-
-        # 최종 실패
-        self._quit_driver()
-        logger.error("최종 발행 실패 (%d회 시도): %s",
-                      self.max_retries + 1, blog_account["blog_id"])
-        return last_result
 
     def close(self):
         """리소스 정리"""

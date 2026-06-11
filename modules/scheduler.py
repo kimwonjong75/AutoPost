@@ -330,7 +330,12 @@ class PublishScheduler:
 
                 # 발행 실행 (blog_publisher 호출)
                 try:
-                    from modules.blog_publisher import BlogPublisher
+                    from modules.blog_publisher import BlogPublisher, PublishResult
+                    from modules.publish_helpers import (
+                        article_to_publish_dict,
+                        build_blog_account,
+                        selected_image_paths,
+                    )
 
                     secrets_path = os.path.join(
                         os.path.dirname(os.path.dirname(__file__)),
@@ -341,15 +346,12 @@ class PublishScheduler:
                         with open(secrets_path, "r", encoding="utf-8") as f:
                             secrets = yaml.safe_load(f) or {}
 
-                    passwords = secrets.get("blog_passwords", {})
-                    naver_pw = passwords.get(entry.blog_id, "")
-                    blog_account = None
-                    for acc in self.config.get("blog_accounts", []):
-                        if acc.get("blog_id") == entry.blog_id:
-                            blog_account = acc
-                            break
+                    # config 계정 + secrets 비밀번호를 publish_single용 dict로 합침
+                    publish_account = build_blog_account(
+                        self.config, secrets, entry.blog_id
+                    )
 
-                    if not blog_account:
+                    if not publish_account:
                         message = f"블로그 계정 '{entry.blog_id}'을(를) 찾을 수 없습니다"
                         logger.error(message)
                     else:
@@ -358,34 +360,60 @@ class PublishScheduler:
                             "inter_post_delay", [30, 90]
                         )
 
-                        for idx, article in enumerate(articles):
-                            try:
-                                result = publisher.publish_single(
-                                    article=article,
-                                    blog_id=entry.blog_id,
-                                    naver_id=blog_account.get("naver_id", ""),
-                                    naver_pw=naver_pw,
-                                )
-
-                                if result.get("success"):
-                                    published += 1
-                                    article.status = "발행완료"
-                                    article.save()
-                                    PublishLog.create(
-                                        blog_id=entry.blog_id,
-                                        keyword_id=article.keyword_id,
-                                        article=article,
-                                        title=article.title,
-                                        post_url=result.get("post_url", ""),
-                                        ip_address=result.get("ip_address", ""),
-                                        status="성공",
-                                        error_message="",
-                                        screenshot_path="",
-                                        retry_count=result.get("retry_count", 0),
-                                        delay_seconds=0,
+                        try:
+                            for idx, article in enumerate(articles):
+                                try:
+                                    result = publisher.publish_with_retry(
+                                        blog_account=publish_account,
+                                        article=article_to_publish_dict(article),
+                                        image_paths=selected_image_paths(article),
                                     )
-                                else:
+
+                                    if result["status"] == PublishResult.SUCCESS:
+                                        published += 1
+                                        article.status = "발행완료"
+                                        article.save()
+                                        PublishLog.create(
+                                            blog_id=entry.blog_id,
+                                            keyword_id=article.keyword_id,
+                                            article=article,
+                                            title=article.title,
+                                            post_url=result.get("post_url", ""),
+                                            ip_address=result.get("ip_address", ""),
+                                            status="성공",
+                                            error_message="",
+                                            screenshot_path="",
+                                            retry_count=result.get("retry_count", 0),
+                                            delay_seconds=0,
+                                        )
+                                    else:
+                                        failed += 1
+                                        article.status = "실패"
+                                        article.save()
+                                        PublishLog.create(
+                                            blog_id=entry.blog_id,
+                                            keyword_id=article.keyword_id,
+                                            article=article,
+                                            title=article.title,
+                                            post_url=result.get("post_url", ""),
+                                            ip_address=result.get("ip_address", ""),
+                                            status="실패",
+                                            error_message=result.get("error_message", ""),
+                                            screenshot_path=result.get("screenshot_path", ""),
+                                            retry_count=result.get("retry_count", 0),
+                                            delay_seconds=0,
+                                        )
+
+                                    # 글 간 대기
+                                    if idx < len(articles) - 1:
+                                        delay = random.uniform(
+                                            inter_post_delay[0], inter_post_delay[1]
+                                        )
+                                        time.sleep(delay)
+
+                                except Exception as exc:
                                     failed += 1
+                                    logger.error("글 발행 실패 [%s]: %s", article.title[:30], exc)
                                     article.status = "실패"
                                     article.save()
                                     PublishLog.create(
@@ -396,39 +424,15 @@ class PublishScheduler:
                                         post_url="",
                                         ip_address="",
                                         status="실패",
-                                        error_message=result.get("error_message", ""),
-                                        screenshot_path=result.get("screenshot_path", ""),
-                                        retry_count=result.get("retry_count", 0),
+                                        error_message=str(exc),
+                                        screenshot_path="",
+                                        retry_count=0,
                                         delay_seconds=0,
                                     )
 
-                                # 글 간 대기
-                                if idx < len(articles) - 1:
-                                    delay = random.uniform(
-                                        inter_post_delay[0], inter_post_delay[1]
-                                    )
-                                    time.sleep(delay)
-
-                            except Exception as exc:
-                                failed += 1
-                                logger.error("글 발행 실패 [%s]: %s", article.title[:30], exc)
-                                article.status = "실패"
-                                article.save()
-                                PublishLog.create(
-                                    blog_id=entry.blog_id,
-                                    keyword_id=article.keyword_id,
-                                    article=article,
-                                    title=article.title,
-                                    post_url="",
-                                    ip_address="",
-                                    status="실패",
-                                    error_message=str(exc),
-                                    screenshot_path="",
-                                    retry_count=0,
-                                    delay_seconds=0,
-                                )
-
-                        message = f"성공 {published}건, 실패 {failed}건"
+                            message = f"성공 {published}건, 실패 {failed}건"
+                        finally:
+                            publisher.close()
 
                 except ImportError:
                     message = "blog_publisher 모듈을 불러올 수 없습니다 (mock 모드에서는 사용 불가)"
