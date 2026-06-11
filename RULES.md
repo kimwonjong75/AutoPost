@@ -596,6 +596,11 @@ if response.prompt_feedback.block_reason:
 - 최대 스케줄 수: `MAX_SCHEDULES = 10`
 - `coalesce=True` — 스케줄러가 꺼진 동안 놓친 실행은 1회만 보충 실행
 
+### AI 모델 파라미터
+
+- **Claude 샘플링 파라미터**: Opus 4.7+ 모델은 `temperature`/`top_p`/`top_k`를 전송하면 400을 반환한다. `_generate_claude()`는 `CLAUDE_NO_SAMPLING_MODELS`에 속한 모델에는 `temperature`를 보내지 않는다. 신규 Claude 모델 추가 시 샘플링 파라미터 허용 여부를 확인할 것.
+- **모델 ID 정확성**: `ENGINE_CONFIGS`의 모델 ID는 최신 GA 라인업 기준(예: `claude-opus-4-8`, `claude-sonnet-4-6`, `gemini-3.1-flash-lite`). 잘못된 날짜 접미사·폐기된 모델 ID는 404를 유발하므로 공식 모델 페이지에서 확인 후 등록.
+
 ### 비용 계산
 
 - `USD_TO_KRW = 1400` 고정 환율 사용 (실시간 환율 연동 없음)

@@ -33,10 +33,9 @@ ENGINE_CONFIGS = {
         "label": "Anthropic (Claude)",
         "api_key_field": "claude",
         "models": [
-            {"id": "claude-haiku-4-5-20241022", "name": "Haiku 4.5 (빠름·가성비)", "input_per_m": 1.00, "output_per_m": 5.00},
-            {"id": "claude-sonnet-4-5-20241022", "name": "Sonnet 4.5 (균형·추천)", "input_per_m": 3.00, "output_per_m": 15.00},
-            {"id": "claude-sonnet-4-6-20250514", "name": "Sonnet 4.6 (최신)", "input_per_m": 3.00, "output_per_m": 15.00},
-            {"id": "claude-opus-4-5-20250514", "name": "Opus 4.5 (최고품질)", "input_per_m": 5.00, "output_per_m": 25.00},
+            {"id": "claude-haiku-4-5-20251001", "name": "Haiku 4.5 (빠름·가성비)", "input_per_m": 1.00, "output_per_m": 5.00},
+            {"id": "claude-sonnet-4-6", "name": "Sonnet 4.6 (균형·추천)", "input_per_m": 3.00, "output_per_m": 15.00},
+            {"id": "claude-opus-4-8", "name": "Opus 4.8 (최고품질·플래그십)", "input_per_m": 5.00, "output_per_m": 25.00},
         ],
         "extra_options": {
             "temperature": {"type": "slider", "min": 0.0, "max": 1.0, "default": 0.7},
@@ -47,8 +46,8 @@ ENGINE_CONFIGS = {
         "label": "Google (Gemini)",
         "api_key_field": "gemini",
         "models": [
-            {"id": "gemini-2.0-flash-lite", "name": "Flash-Lite (최저가)", "input_per_m": 0.075, "output_per_m": 0.30},
-            {"id": "gemini-2.5-flash", "name": "2.5 Flash (무료티어)", "input_per_m": 0.15, "output_per_m": 0.60},
+            {"id": "gemini-3.1-flash-lite", "name": "3.1 Flash-Lite (최저가)", "input_per_m": 0.25, "output_per_m": 1.50},
+            {"id": "gemini-3.5-flash", "name": "3.5 Flash (균형)", "input_per_m": 1.50, "output_per_m": 9.00},
             {"id": "gemini-2.5-pro", "name": "2.5 Pro (고성능)", "input_per_m": 1.25, "output_per_m": 10.00},
         ],
         "extra_options": {
@@ -59,6 +58,9 @@ ENGINE_CONFIGS = {
 
 # USD→KRW 환율 (대략)
 USD_TO_KRW = 1400
+
+# temperature 등 샘플링 파라미터를 허용하지 않는 Claude 모델 (Opus 4.7+는 전송 시 400 반환)
+CLAUDE_NO_SAMPLING_MODELS = ("claude-opus-4-8", "claude-opus-4-7")
 
 
 def load_config(config_path: str = None) -> dict:
@@ -230,16 +232,19 @@ class ContentGenerator:
     def _generate_claude(self, model: str, system_prompt: str, user_prompt: str, options: dict) -> dict:
         client = self._clients["claude"]
 
-        temperature = options.get("temperature", 0.7)
         max_tokens = options.get("max_tokens", 8000)
 
-        message = client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
+        request_params = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_prompt}],
+        }
+        # Opus 4.7+는 temperature를 전송하면 400을 반환하므로 지원 모델에만 추가
+        if model not in CLAUDE_NO_SAMPLING_MODELS:
+            request_params["temperature"] = options.get("temperature", 0.7)
+
+        message = client.messages.create(**request_params)
 
         raw_text = message.content[0].text
         result = self._parse_json_response(raw_text)

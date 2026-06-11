@@ -6,7 +6,7 @@ api_keys:
   ideogram: ''
 defaults:
   text_engine: gemini
-  text_model: gemini-2.5-flash
+  text_model: gemini-3.1-flash-lite
   image_engine: gemini_flash_image
   image_quality: medium
   image_count: 3
