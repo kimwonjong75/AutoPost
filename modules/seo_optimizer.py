@@ -12,10 +12,10 @@ logger = logging.getLogger(__name__)
 
 # 엔진 선택 우선순위 (비용 KRW 오름차순)
 ENGINE_PRIORITY = [
-    ("gemini", "gemini-2.0-flash-lite"),
+    ("gemini", "gemini-3.1-flash-lite"),
     ("gemini", "gemini-2.5-flash"),
     ("openai", "gpt-4o-mini"),
-    ("claude", "claude-haiku-4-5-20241022"),
+    ("claude", "claude-haiku-4-5-20251001"),
 ]
 
 SEO_SYSTEM_PROMPT = """당신은 네이버 블로그 SEO 전문가입니다.

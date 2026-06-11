@@ -413,13 +413,13 @@ def _parse_json_response(self, raw_text: str) -> dict:
 ```python
 # 엔진 우선순위 (비용 KRW 오름차순)
 ENGINE_PRIORITY = [
-    ("gemini", "gemini-2.0-flash-lite"),   # ₩0.25
+    ("gemini", "gemini-3.1-flash-lite"),   # ₩0.95
     ("gemini", "gemini-2.5-flash"),         # ₩0.50
     ("openai", "gpt-4o-mini"),              # ₩0.50
     ("claude", "claude-haiku-4-5"),         # ₩3.57
     ("gemini", "gemini-2.5-pro"),           # ₩5.25
     ("openai", "gpt-4o"),                   # ₩8.40
-    ("claude", "claude-sonnet-4-5"),        # ₩10.71
+    ("claude", "claude-sonnet-4-6"),        # ₩10.71
 ]
 # API 키 있는 첫 번째 엔진 선택
 ```

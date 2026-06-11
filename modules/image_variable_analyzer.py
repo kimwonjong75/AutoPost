@@ -15,24 +15,24 @@ logger = logging.getLogger(__name__)
 
 # 분석 전용 엔진 우선순위 (저렴한 순)
 _ANALYSIS_ENGINE_PRIORITY: list[tuple[str, str]] = [
-    ("gemini", "gemini-2.0-flash-lite"),
+    ("gemini", "gemini-3.1-flash-lite"),
     ("gemini", "gemini-2.5-flash"),
     ("openai", "gpt-4o-mini"),
-    ("claude", "claude-haiku-4-5-20241022"),
+    ("claude", "claude-haiku-4-5-20251001"),
     ("gemini", "gemini-2.5-pro"),
     ("openai", "gpt-4o"),
-    ("claude", "claude-sonnet-4-6-20250514"),
+    ("claude", "claude-sonnet-4-6"),
 ]
 
 # 분석 1회 예상 비용 (원화, ~1800 input + 150 output tokens 기준)
 ANALYSIS_COST_KRW: dict[tuple[str, str], float] = {
-    ("gemini", "gemini-2.0-flash-lite"): 0.25,
+    ("gemini", "gemini-3.1-flash-lite"): 0.95,
     ("gemini", "gemini-2.5-flash"): 0.50,
     ("openai", "gpt-4o-mini"): 0.50,
-    ("claude", "claude-haiku-4-5-20241022"): 3.57,
+    ("claude", "claude-haiku-4-5-20251001"): 3.57,
     ("gemini", "gemini-2.5-pro"): 5.25,
     ("openai", "gpt-4o"): 8.40,
-    ("claude", "claude-sonnet-4-6-20250514"): 10.71,
+    ("claude", "claude-sonnet-4-6"): 10.71,
 }
 
 
