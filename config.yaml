@@ -1,7 +1,7 @@
 api_keys:
   openai: ''
   claude: ''
-  gemini: REMOVED_GEMINI_API_KEY
+  gemini: 
   replicate: ''
   ideogram: ''
 defaults:
@@ -14,7 +14,7 @@ defaults:
   promo_image_count: 1
 google_sheet:
   service_account_json: ./data/google-service-account.json
-  sheet_id: REMOVED_GOOGLE_SHEET_ID
+  sheet_id: 
 publish:
   inter_blog_delay:
   - 60
