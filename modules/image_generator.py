@@ -12,6 +12,8 @@ from pathlib import Path
 
 import requests
 
+from modules import pricing
+
 logger = logging.getLogger(__name__)
 
 # 병렬 이미지 생성 최대 워커 수 (API rate limit 고려)
@@ -131,7 +133,8 @@ class ImageGenerator:
                 "local_path": str,
                 "prompt_used": str,
                 "engine": str,
-                "cost_estimate": float,
+                "cost_usd": float,
+                "cost_estimate": float,   # KRW (cost_usd × 환율)
                 "width": int,
                 "height": int,
             }
@@ -265,10 +268,20 @@ class ImageGenerator:
             "local_path": str(filepath),
             "prompt_used": "(로컬 업로드)",
             "engine": "local",
+            "cost_usd": 0,
             "cost_estimate": 0,
             "width": w,
             "height": h,
         }
+
+    # ------------------------------------------------------------------
+    # 비용 계산 (pricing SSOT)
+    # ------------------------------------------------------------------
+
+    def _cost(self, engine: str, size: str | None = None, quality: str | None = None) -> tuple[float, float]:
+        """(cost_usd, cost_krw) 반환. 단가·환율은 config.pricing 기준."""
+        cost_usd = pricing.calc_image_cost_usd(self.config, engine, size, quality)
+        return round(cost_usd, 6), round(pricing.usd_to_krw(self.config, cost_usd), 2)
 
     # ------------------------------------------------------------------
     # 엔진별 구현
@@ -296,14 +309,16 @@ class ImageGenerator:
         filepath = self.image_dir / filename
         filepath.write_bytes(image_data)
 
-        cost_map = {"low": 7, "medium": 19, "high": 55}
         w, h = (int(x) for x in size.split("x"))
+        cost_usd, cost_krw = self._cost("gpt_image", size=size, quality=quality)
 
         return {
             "local_path": str(filepath),
             "prompt_used": prompt,
             "engine": "gpt_image",
-            "cost_estimate": cost_map.get(quality, 19),
+            "quality": quality,
+            "cost_usd": cost_usd,
+            "cost_estimate": cost_krw,
             "width": w,
             "height": h,
         }
@@ -325,11 +340,13 @@ class ImageGenerator:
         filepath = self.image_dir / filename
         response.images[0].save(str(filepath))
 
+        cost_usd, cost_krw = self._cost("gemini_image")
         return {
             "local_path": str(filepath),
             "prompt_used": prompt,
             "engine": "gemini_image",
-            "cost_estimate": 55,
+            "cost_usd": cost_usd,
+            "cost_estimate": cost_krw,
             "width": 1024,
             "height": 576,
         }
@@ -366,12 +383,13 @@ class ImageGenerator:
         img_data = requests.get(image_url, timeout=60).content
         filepath.write_bytes(img_data)
 
-        cost_map = {"flux_schnell": 21, "flux_pro": 77}
+        cost_usd, cost_krw = self._cost(engine)
         return {
             "local_path": str(filepath),
             "prompt_used": prompt,
             "engine": engine,
-            "cost_estimate": cost_map.get(engine, 21),
+            "cost_usd": cost_usd,
+            "cost_estimate": cost_krw,
             "width": 1024,
             "height": 576,
         }
@@ -399,11 +417,13 @@ class ImageGenerator:
         img_data = requests.get(image_url, timeout=60).content
         filepath.write_bytes(img_data)
 
+        cost_usd, cost_krw = self._cost("ideogram")
         return {
             "local_path": str(filepath),
             "prompt_used": prompt,
             "engine": "ideogram",
-            "cost_estimate": 56,
+            "cost_usd": cost_usd,
+            "cost_estimate": cost_krw,
             "width": 1024,
             "height": 576,
         }
@@ -436,6 +456,7 @@ class ImageGenerator:
                     "local_path": str(filepath),
                     "prompt_used": prompt,
                     "engine": "gemini_flash_image",
+                    "cost_usd": 0,
                     "cost_estimate": 0,
                     "width": 1024,
                     "height": 1024,
@@ -457,6 +478,7 @@ class ImageGenerator:
             "local_path": str(filepath),
             "prompt_used": prompt,
             "engine": "pollinations",
+            "cost_usd": 0,
             "cost_estimate": 0,
             "width": 1024,
             "height": 576,

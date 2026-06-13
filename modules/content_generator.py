@@ -56,9 +56,6 @@ ENGINE_CONFIGS = {
     },
 }
 
-# USD→KRW 환율 (대략)
-USD_TO_KRW = 1400
-
 # temperature 등 샘플링 파라미터를 허용하지 않는 Claude 모델 (Opus 4.7+는 전송 시 400 반환)
 CLAUDE_NO_SAMPLING_MODELS = ("claude-opus-4-8", "claude-opus-4-7")
 
@@ -154,7 +151,8 @@ class ContentGenerator:
                 "body_html": str,
                 "tags": list[str],
                 "image_prompt": str,
-                "meta": {"engine": str, "model": str, "tokens_used": int, "cost_estimate": float}
+                "meta": {"engine", "model", "input_tokens", "output_tokens",
+                         "tokens_used", "cost_usd", "cost_estimate"}
             }
 
         Raises:
@@ -212,16 +210,11 @@ class ContentGenerator:
         raw_text = response.choices[0].message.content
         result = self._parse_json_response(raw_text)
 
-        result["meta"] = {
-            "engine": "openai",
-            "model": model,
-            "tokens_used": response.usage.total_tokens,
-            "cost_estimate": self._calc_cost(
-                "openai", model,
-                response.usage.prompt_tokens,
-                response.usage.completion_tokens,
-            ),
-        }
+        result["meta"] = self._build_meta(
+            "openai", model,
+            response.usage.prompt_tokens,
+            response.usage.completion_tokens,
+        )
         return self._normalize_result(result)
 
     # ------------------------------------------------------------------
@@ -248,14 +241,11 @@ class ContentGenerator:
         raw_text = message.content[0].text
         result = self._parse_json_response(raw_text)
 
-        input_tokens = message.usage.input_tokens
-        output_tokens = message.usage.output_tokens
-        result["meta"] = {
-            "engine": "claude",
-            "model": model,
-            "tokens_used": input_tokens + output_tokens,
-            "cost_estimate": self._calc_cost("claude", model, input_tokens, output_tokens),
-        }
+        result["meta"] = self._build_meta(
+            "claude", model,
+            message.usage.input_tokens,
+            message.usage.output_tokens,
+        )
         return self._normalize_result(result)
 
     # ------------------------------------------------------------------
@@ -293,16 +283,10 @@ class ContentGenerator:
         if usage:
             input_tokens = getattr(usage, "prompt_token_count", 0) or 0
             output_tokens = getattr(usage, "candidates_token_count", 0) or 0
-            total_tokens = getattr(usage, "total_token_count", 0) or 0
         else:
-            input_tokens = output_tokens = total_tokens = 0
+            input_tokens = output_tokens = 0
 
-        result["meta"] = {
-            "engine": "gemini",
-            "model": model,
-            "tokens_used": total_tokens,
-            "cost_estimate": self._calc_cost("gemini", model, input_tokens, output_tokens),
-        }
+        result["meta"] = self._build_meta("gemini", model, input_tokens, output_tokens)
         return self._normalize_result(result)
 
     # ------------------------------------------------------------------
@@ -387,24 +371,17 @@ class ContentGenerator:
             "meta": result.get("meta", {}),
         }
 
-    @staticmethod
-    def _calc_cost(engine: str, model: str, input_tokens: int, output_tokens: int) -> float:
-        """비용 추정 (원화 KRW). ENGINE_CONFIGS의 단가 기준."""
-        engine_cfg = ENGINE_CONFIGS.get(engine)
-        if not engine_cfg:
-            return 0.0
+    def _build_meta(self, engine: str, model: str, input_tokens: int, output_tokens: int) -> dict:
+        """토큰 사용량으로 meta 구성. 비용은 USD(cost_usd)로 저장하고 KRW는 표시용으로 함께 제공."""
+        from modules import pricing
 
-        model_cfg = None
-        for m in engine_cfg["models"]:
-            if m["id"] == model:
-                model_cfg = m
-                break
-
-        if not model_cfg:
-            return 0.0
-
-        input_cost_usd = (input_tokens / 1_000_000) * model_cfg["input_per_m"]
-        output_cost_usd = (output_tokens / 1_000_000) * model_cfg["output_per_m"]
-        total_krw = (input_cost_usd + output_cost_usd) * USD_TO_KRW
-
-        return round(total_krw, 2)
+        cost_usd = pricing.calc_text_cost_usd(self.config, engine, model, input_tokens, output_tokens)
+        return {
+            "engine": engine,
+            "model": model,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "tokens_used": input_tokens + output_tokens,
+            "cost_usd": round(cost_usd, 6),
+            "cost_estimate": round(pricing.usd_to_krw(self.config, cost_usd), 2),
+        }

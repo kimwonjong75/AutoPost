@@ -32,7 +32,6 @@ SEO_SYSTEM_PROMPT = """당신은 네이버 블로그 SEO 전문가입니다.
 
 # 분석당 예상 토큰 (입력+출력)
 ESTIMATED_TOKENS_PER_CALL = 800
-USD_TO_KRW = 1400
 
 
 class SeoOptimizer:
@@ -55,20 +54,18 @@ class SeoOptimizer:
         return None
 
     def get_estimated_cost(self) -> float:
-        """1건당 예상 비용 (KRW)."""
-        from modules.content_generator import ENGINE_CONFIGS
+        """1건당 예상 비용 (KRW). 단가·환율은 pricing(config) 기준."""
+        from modules import pricing
 
         ep = self.pick_engine()
         if not ep:
             return 0.0
 
         engine, model = ep
-        engine_cfg = ENGINE_CONFIGS.get(engine, {})
-        for m in engine_cfg.get("models", []):
-            if m["id"] == model:
-                avg_price = (m["input_per_m"] + m["output_per_m"]) / 2
-                return round((ESTIMATED_TOKENS_PER_CALL / 1_000_000) * avg_price * USD_TO_KRW, 2)
-        return 0.0
+        price = pricing.get_text_price(self.config, engine, model)
+        avg_price = (price["input"] + price["output"]) / 2
+        usd = (ESTIMATED_TOKENS_PER_CALL / 1_000_000) * avg_price
+        return round(pricing.usd_to_krw(self.config, usd), 2)
 
     def optimize(self, title: str, tags: list[str], keyword: str) -> dict:
         """
@@ -136,6 +133,7 @@ class SeoOptimizer:
                 "changes": changes,
                 "engine": engine,
                 "model": model,
+                "cost_usd": meta.get("cost_usd", 0),
                 "cost_estimate": meta.get("cost_estimate", 0),
                 "optimized": True,
             }
@@ -153,6 +151,7 @@ class SeoOptimizer:
             "changes": reason,
             "engine": "none",
             "model": "",
+            "cost_usd": 0,
             "cost_estimate": 0,
             "optimized": False,
         }

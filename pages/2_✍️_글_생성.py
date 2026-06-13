@@ -525,7 +525,10 @@ if st.button(
                 image_prompt=result.get("image_prompt", ""),
                 status="생성완료",
                 cost_estimate=meta.get("cost_estimate", 0),
+                cost_usd=meta.get("cost_usd", 0),
                 tokens_used=meta.get("tokens_used", 0),
+                input_tokens=meta.get("input_tokens", 0),
+                output_tokens=meta.get("output_tokens", 0),
             )
 
             result["_keyword"] = keyword
@@ -599,6 +602,7 @@ if st.session_state.get("gen_results"):
                             article_obj.title = seo_result["title"]
                             article_obj.set_tags_list(seo_result["tags"])
                             article_obj.cost_estimate += seo_result["cost_estimate"]
+                            article_obj.cost_usd += seo_result.get("cost_usd", 0)
                             article_obj.save()
                         except Exception:
                             pass
@@ -724,6 +728,7 @@ if successful_results:
         "replicate_api_key": config.get("api_keys", {}).get("replicate", ""),
         "ideogram_api_key": config.get("api_keys", {}).get("ideogram", ""),
         "image_dir": "./data/images",
+        "pricing": config.get("pricing", {}),
     }
     img_generator = ImageGenerator(_img_gen_config)
     img_builder = ImagePromptBuilder()
@@ -895,7 +900,9 @@ if successful_results:
                                 local_path=img_result["local_path"],
                                 width=img_result.get("width", 0),
                                 height=img_result.get("height", 0),
+                                quality=img_result.get("quality", ""),
                                 cost_estimate=img_result.get("cost_estimate", 0),
+                                cost_usd=img_result.get("cost_usd", 0),
                             )
 
                     prog.empty()

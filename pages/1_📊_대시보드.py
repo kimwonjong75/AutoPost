@@ -2,6 +2,7 @@
 📊 대시보드 — 오늘의 현황, 블로그별 진행률, 비용 추정, 최근 발행 기록
 """
 
+import calendar
 import datetime
 import json
 import sys
@@ -14,6 +15,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from modules import pricing
 from modules.models import (
     GeneratedArticle,
     GeneratedImage,
@@ -297,14 +299,14 @@ def get_monthly_cost() -> dict:
         )
         for a in articles:
             key = engine_map.get(a.engine, "OpenAI (글)")
-            costs[key] += a.cost_estimate
+            costs[key] += pricing.row_krw(config, a.cost_usd, a.cost_estimate)
 
         images = GeneratedImage.select().where(
             GeneratedImage.created_at.between(start, end)
         )
         for img in images:
             key = img_engine_map.get(img.engine, "GPT Image")
-            costs[key] += img.cost_estimate
+            costs[key] += pricing.row_krw(config, img.cost_usd, img.cost_estimate)
     except Exception:
         pass
 
@@ -352,12 +354,12 @@ def get_daily_cost_trend(days: int = 7) -> list[dict]:
             for a in GeneratedArticle.select().where(
                 GeneratedArticle.created_at.between(start, end)
             ):
-                text_cost += a.cost_estimate
+                text_cost += pricing.row_krw(config, a.cost_usd, a.cost_estimate)
 
             for img in GeneratedImage.select().where(
                 GeneratedImage.created_at.between(start, end)
             ):
-                img_cost += img.cost_estimate
+                img_cost += pricing.row_krw(config, img.cost_usd, img.cost_estimate)
 
             result.append({
                 "날짜": day.strftime("%m/%d"),
@@ -416,7 +418,7 @@ def get_engine_stats() -> list[dict]:
             if key not in stats:
                 stats[key] = {"엔진": a.engine, "모델": a.model, "건수": 0, "비용(₩)": 0.0, "평균토큰": 0, "_tokens": 0}
             stats[key]["건수"] += 1
-            stats[key]["비용(₩)"] += a.cost_estimate
+            stats[key]["비용(₩)"] += pricing.row_krw(config, a.cost_usd, a.cost_estimate)
             stats[key]["_tokens"] += a.tokens_used
 
         result = []
@@ -429,6 +431,67 @@ def get_engine_stats() -> list[dict]:
         return sorted(result, key=lambda x: x["건수"], reverse=True)
     except Exception:
         return []
+
+
+def get_period_cost(start, end) -> dict:
+    """기간 내 텍스트/이미지 실측 비용(KRW, 현재 환율 적용)과 건수."""
+    text = img = 0.0
+    a_cnt = i_cnt = 0
+    try:
+        for a in GeneratedArticle.select().where(GeneratedArticle.created_at.between(start, end)):
+            text += pricing.row_krw(config, a.cost_usd, a.cost_estimate)
+            a_cnt += 1
+        for im in GeneratedImage.select().where(GeneratedImage.created_at.between(start, end)):
+            img += pricing.row_krw(config, im.cost_usd, im.cost_estimate)
+            i_cnt += 1
+    except Exception:
+        pass
+    return {"text": text, "image": img, "total": text + img, "articles": a_cnt, "images": i_cnt}
+
+
+def get_projection() -> dict:
+    """최근 lookback_days 실측 일평균으로 이번달/다음달 예상 비용 산출."""
+    today = datetime.date.today()
+    lookback = pricing.get_lookback_days(config)
+
+    lb_start = datetime.datetime.combine(today - datetime.timedelta(days=lookback - 1), datetime.time.min)
+    lb_end = datetime.datetime.combine(today, datetime.time.max)
+    lb_total = get_period_cost(lb_start, lb_end)["total"]
+    daily_avg = lb_total / lookback if lookback else 0.0
+
+    days_in_month = calendar.monthrange(today.year, today.month)[1]
+    mtd = get_period_cost(
+        datetime.datetime(today.year, today.month, 1),
+        datetime.datetime.combine(today, datetime.time.max),
+    )["total"]
+    remaining_days = days_in_month - today.day
+
+    next_year, next_month = (today.year + 1, 1) if today.month == 12 else (today.year, today.month + 1)
+    days_next = calendar.monthrange(next_year, next_month)[1]
+
+    return {
+        "lookback_days": lookback,
+        "daily_avg": daily_avg,
+        "mtd": mtd,
+        "remaining_days": remaining_days,
+        "month_forecast": mtd + daily_avg * remaining_days,
+        "next_forecast": daily_avg * days_next,
+        "has_data": lb_total > 0,
+    }
+
+
+def get_selected_range(label: str):
+    """기간 라벨 → (start, end) datetime."""
+    today = datetime.date.today()
+    if label == "오늘":
+        return get_today_range()
+    if label == "이번 주":
+        monday = today - datetime.timedelta(days=today.weekday())
+        return (
+            datetime.datetime.combine(monday, datetime.time.min),
+            datetime.datetime.combine(today, datetime.time.max),
+        )
+    return get_month_range()
 
 
 # ──────────────────────────────────────────────
@@ -508,6 +571,12 @@ with left_col:
 with right_col:
     st.markdown('<div class="section-header">이번 달 비용 추정</div>', unsafe_allow_html=True)
 
+    _fx = (config.get("pricing", {}) or {}).get("exchange_rate", {}) or {}
+    st.caption(
+        f"적용 환율 ₩{pricing.get_exchange_rate(config):,.0f}/USD "
+        f"({_fx.get('source', 'manual')} · {_fx.get('last_updated', '-')})"
+    )
+
     costs = get_monthly_cost()
     total_cost = sum(costs.values())
 
@@ -544,6 +613,68 @@ with right_col:
             <span class="ct-value">₩0</span>
         </div>
         """, unsafe_allow_html=True)
+
+st.markdown("")
+
+# ── 기간별 비용 & 예측 ──
+st.markdown('<div class="section-header">기간별 비용 & 예측</div>', unsafe_allow_html=True)
+
+period_label = st.radio(
+    "기간 선택",
+    ["오늘", "이번 주", "이번 달", "사용자 지정"],
+    horizontal=True,
+    key="cost_period",
+)
+
+if period_label == "사용자 지정":
+    today = datetime.date.today()
+    dr = st.date_input(
+        "날짜 범위",
+        value=(today - datetime.timedelta(days=6), today),
+        key="cost_custom_range",
+    )
+    if isinstance(dr, tuple) and len(dr) == 2:
+        cost_start = datetime.datetime.combine(dr[0], datetime.time.min)
+        cost_end = datetime.datetime.combine(dr[1], datetime.time.max)
+    else:
+        cost_start, cost_end = get_today_range()
+else:
+    cost_start, cost_end = get_selected_range(period_label)
+
+pc = get_period_cost(cost_start, cost_end)
+
+mc1, mc2, mc3, mc4 = st.columns(4)
+mc1.metric("총 비용 (실측)", f"₩{pc['total']:,.0f}")
+mc2.metric("텍스트 AI", f"₩{pc['text']:,.0f}")
+mc3.metric("이미지 AI", f"₩{pc['image']:,.0f}")
+mc4.metric("생성량", f"{pc['articles']}글 / {pc['images']}장")
+if pc["articles"]:
+    st.caption(f"글 1건당 평균 ₩{pc['total'] / pc['articles']:,.0f} (이미지 포함)")
+
+st.markdown("**예상 비용 (예측치)**")
+proj = get_projection()
+if proj["has_data"]:
+    pj1, pj2, pj3 = st.columns(3)
+    pj1.metric(f"최근 {proj['lookback_days']}일 일평균", f"₩{proj['daily_avg']:,.0f}")
+    pj2.metric(
+        "이번 달 예상", f"₩{proj['month_forecast']:,.0f}",
+        help=f"이번 달 실측 ₩{proj['mtd']:,.0f} + 일평균 × 남은 {proj['remaining_days']}일",
+    )
+    pj3.metric("다음 달 예상", f"₩{proj['next_forecast']:,.0f}")
+else:
+    st.info("실측 데이터가 아직 없습니다. 아래 가정값으로 예측합니다.")
+    ac1, ac2 = st.columns(2)
+    posts_per_day = ac1.number_input("하루 생성 건수(가정)", min_value=1, max_value=100, value=10, key="proj_ppd")
+    cost_per_post = ac2.number_input(
+        "건당 비용 가정(₩)", min_value=0,
+        value=int(pricing.get_assumed_cost_per_post_krw(config)), step=50, key="proj_cpp",
+    )
+    est_day = posts_per_day * cost_per_post
+    pe1, pe2 = st.columns(2)
+    pe1.metric("하루 예상", f"₩{est_day:,.0f}")
+    pe2.metric("한 달 예상 (30일)", f"₩{est_day * 30:,.0f}")
+
+st.caption("※ 예측·추정치이며 실제 API 청구액(결제 시점 환율·실토큰)과 다를 수 있습니다. 단가·환율은 설정 > 단가·환율에서 변경합니다.")
 
 st.markdown("")
 

@@ -41,6 +41,26 @@ publish:
 seo:
   enabled: true
   auto_optimize: false
+pricing:
+  exchange_rate:
+    krw_per_usd: 1520        # 수동 기본값 (설정 > 단가·환율에서 편집/자동갱신)
+    source: manual           # manual | auto
+    last_updated: '2026-06-13'
+  text_models: {}            # 'engine/model': {input: USD/1M, output: USD/1M} — 비우면 코드 기본단가 사용
+  image_models:              # USD/장. gpt_image는 사이즈·품질별, 그 외는 _flat
+    gpt_image:
+      '1024x1024': {low: 0.011, medium: 0.042, high: 0.167}
+      '1536x1024': {low: 0.016, medium: 0.063, high: 0.25}
+      '1024x1536': {low: 0.016, medium: 0.063, high: 0.25}
+    gemini_image: {_flat: 0.04}
+    flux_schnell: {_flat: 0.015}
+    flux_pro: {_flat: 0.055}
+    ideogram: {_flat: 0.04}
+    gemini_flash_image: {_flat: 0.0}
+    pollinations: {_flat: 0.0}
+  projection:
+    lookback_days: 7         # 예측용 일평균 산출 구간
+    assumed_cost_per_post_krw: 400   # 실측 데이터 없을 때 수동 예측 단가
 adb:
   path: C:\platform-tools\adb.exe
   airplane_on_wait: 8

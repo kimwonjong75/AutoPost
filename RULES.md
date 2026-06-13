@@ -84,7 +84,8 @@
 |---|---|---|---|
 | `models.py` | Peewee ORM 모델 정의, DB 초기화 | peewee, SQLite | 4개 테이블 스키마 일관성; `init_db()` 호출 여부 |
 | `content_generator.py` | 텍스트 다중 엔진 AI 생성 | openai, anthropic, google.generativeai, models.py | `ENGINE_CONFIGS` 구조 유지; `_parse_json_response()` JSON 파싱 로직 |
-| `image_generator.py` | 이미지 다중 엔진 생성 | replicate, requests (Ideogram/Pollinations), Pillow | `IMAGE_ENGINE_CONFIGS` 구조 유지; `data/images/` 저장 경로 |
+| `image_generator.py` | 이미지 다중 엔진 생성 | replicate, requests (Ideogram/Pollinations), Pillow, pricing.py | `IMAGE_ENGINE_CONFIGS` 구조 유지; `data/images/` 저장 경로; 단가는 `pricing.py`로 계산(`_cost()`) |
+| `pricing.py` | 단가·환율 단일 출처(SSOT). config `pricing` 섹션 읽어 USD 비용 계산·KRW 환산·실시간 환율 조회 | requests, content_generator.ENGINE_CONFIGS(지연 import) | 비용은 USD로 저장, 표시 시 ×환율. config 미설정 시 코드 기본값 폴백 |
 | `image_prompt_builder.py` | 아파트 이미지 프롬프트 변형 생성 | — | `APARTMENT_LOCATIONS(30)`, `DIRT_LEVELS(5)`, `LIGHT_SOURCES(5)`, `ANGLES(5)` 배열 크기 |
 | `image_variable_analyzer.py` | AI로 최적 이미지 변수 자동 선택 | content_generator.py (LLM 재사용) | 엔진 우선순위 순서(비용 오름차순) 유지 |
 | `blog_publisher.py` | 네이버 블로그 Selenium 자동화 | undetected-chromedriver, pyperclip, models.py | 로그인→워밍업→에디터→본문→이미지→태그→발행 순서; 쿠키 경로; `_wait()` 가우시안 분포; `_warmup_session()` config.yaml `publish.warmup`; `_human_scroll()` 스크롤 모방 |
@@ -100,11 +101,11 @@
 
 | 파일 | 책임 | 주요 의존 | 수정 시 확인 사항 |
 |---|---|---|---|
-| `1_📊_대시보드.py` | 지표·발행 현황 표시 | models.py | 쿼리 성능 (인덱스 활용 여부) |
+| `1_📊_대시보드.py` | 지표·발행 현황·기간별 비용·예측 표시 | models.py, pricing.py | 쿼리 성능; 비용은 `pricing.row_krw()`로 환율 반영(cost_usd×환율, 없으면 cost_estimate 폴백) |
 | `2_✍️_글_생성.py` | 글·이미지 생성 워크플로우 | content_generator.py, image_generator.py, attachment_manager.py, prompt_loader.py, models.py | 비용 표시, 생성 후 DB 저장; 상품 선택 UI(config.yaml `products`) |
 | `3_👁️_검토_수정.py` | 기사·이미지 리뷰·수정 | models.py, image_generator.py | 상태 전이 (생성완료→검토완료) |
 | `4_🚀_발행.py` | 발행 큐 관리·실행 | blog_publisher.py, publish_helpers.py, ip_changer.py, models.py, google_sheet.py | 딜레이 설정, 단계별 피드백, PublishLog 기록; 실제 발행 토글(기본 OFF=mock) |
-| `5_⚙️_설정.py` | API 키·설정·ADB·상품 리스트 관리 | app.py (get/save config/secrets), attachment_manager.py, prompt_loader.py | 키 마스킹 표시; secrets.yaml 저장; 탭6 상품 리스트(config.yaml `products`, 최대 15개) |
+| `5_⚙️_설정.py` | API 키·설정·ADB·상품 리스트·단가/환율 관리 | app.py (get/save config/secrets), attachment_manager.py, prompt_loader.py, pricing.py | 키 마스킹 표시; secrets.yaml 저장; 탭6 상품 리스트(최대 15개); 탭7 단가·환율(config.yaml `pricing`, 환율 자동갱신 버튼) |
 | `6_📅_예약발행.py` | 예약 발행 스케줄 등록·관리·실행 기록 | scheduler.py, models.py | 스케줄러 싱글톤; 최대 10개 스케줄; CronTrigger 사용 |
 
 ### 진입점 (`app.py`)
@@ -180,7 +181,7 @@ system_prompt(templates/*.txt) + user_prompt(키워드+첨부 컨텍스트)
     → ContentGenerator.generate(engine, model)
     → _parse_json_response() → JSON 추출 (코드블록 래핑 처리 포함)
     → _normalize_result() → 필드 보정
-    → _calc_cost(tokens) → KRW 비용 계산
+    → _build_meta(tokens) → pricing으로 USD 비용 계산(cost_usd) + KRW 환산(cost_estimate)
     → 결과: {title, body_html, tags, image_prompt, meta}
 ```
 
@@ -263,8 +264,11 @@ class GeneratedArticle(Model):
     tags: str                # JSON 배열 문자열 — get_tags_list() 사용
     image_prompt: str | None
     status: str              # "생성완료" | "검토완료" | "발행완료" | "실패"
-    cost_estimate: float     # KRW
-    tokens_used: int
+    cost_estimate: float     # KRW (생성 시점 환율 스냅샷, 하위호환용)
+    cost_usd: float          # USD (환율 무관 SSOT) — 표시 시 ×환율
+    tokens_used: int         # 입력+출력 합산
+    input_tokens: int
+    output_tokens: int
     created_at: datetime
 
 class GeneratedImage(Model):
@@ -272,12 +276,14 @@ class GeneratedImage(Model):
     keyword_id: str
     article_id: ForeignKeyField  # → GeneratedArticle
     engine: str              # "gpt_image" | "gemini_image" | "gemini_flash_image"
-                             # | "flux_schnell" | "flux_pro" | "ideogram" | "pollinations"
+                             # | "flux_schnell" | "flux_pro" | "ideogram" | "pollinations" | "local"
     prompt_used: str
     local_path: str
     width: int
     height: int
-    cost_estimate: float     # KRW
+    quality: str             # gpt_image 등 품질 옵션 (단가 계산용)
+    cost_estimate: float     # KRW (생성 시점 환율 스냅샷, 하위호환용)
+    cost_usd: float          # USD (환율 무관 SSOT) — 표시 시 ×환율
     is_selected: bool
     created_at: datetime
 
@@ -308,8 +314,11 @@ GenerateResult = {
     "meta": {
         "engine": str,
         "model": str,
+        "input_tokens": int,
+        "output_tokens": int,
         "tokens_used": int,
-        "cost_estimate": float   # KRW
+        "cost_usd": float,       # USD (환율 무관 SSOT)
+        "cost_estimate": float   # KRW (cost_usd × 환율)
     }
 }
 
@@ -332,7 +341,9 @@ ImageGenerateResult = {
     "local_path": str,
     "prompt_used": str,
     "engine": str,
-    "cost_estimate": float,   # KRW
+    "quality": str,           # gpt_image 등 (선택)
+    "cost_usd": float,        # USD (환율 무관 SSOT)
+    "cost_estimate": float,   # KRW (cost_usd × 환율)
     "width": int,
     "height": int
 }
@@ -616,9 +627,14 @@ if not response.candidates:
 
 ### 비용 계산
 
-- `USD_TO_KRW = 1400` 고정 환율 사용 (실시간 환율 연동 없음)
-- 비용은 추정치(`cost_estimate`)이며 실제 청구액과 다를 수 있음
-- `tokens_used` 는 입력+출력 토큰 합산값으로 저장
+- **단가·환율 단일 출처는 `modules/pricing.py`** — 모든 비용 계산은 이 모듈을 거친다. 단가/환율을 코드에 하드코딩하지 말 것(`config.yaml`의 `pricing` 섹션에서 읽음, 미설정 시 코드 기본값 폴백)
+- **비용은 USD(`cost_usd`)로 저장**하고 화면 표시 시점에 ×환율로 KRW 계산 → 환율만 바꿔도 과거 기록까지 즉시 재환산됨. `cost_estimate`(KRW)는 생성 시점 스냅샷으로 하위호환·폴백용
+- 대시보드 등 표시 계층은 `pricing.row_krw(config, cost_usd, cost_estimate)`로 KRW를 구한다(cost_usd 있으면 환율 적용, 없으면 cost_estimate 사용)
+- 텍스트 단가는 `pricing.get_text_price()`(config override → `ENGINE_CONFIGS` 폴백), 이미지 단가는 `pricing.calc_image_cost_usd()`(config override → `DEFAULT_IMAGE_PRICES_USD` 폴백, gpt_image는 사이즈·품질별)
+- 환율 기본값 `pricing.DEFAULT_KRW_PER_USD`. 설정 페이지의 "환율 자동 갱신"은 `pricing.fetch_live_exchange_rate()`(open.er-api.com) 사용, 실패 시 기존 값 유지(예외 전파 금지)
+- 비용은 추정치이며 실제 청구액(결제 시점 환율·실토큰)과 다를 수 있음
+- `tokens_used`는 입력+출력 합산값, `input_tokens`/`output_tokens`는 분리 저장(단가 변경 시 재계산 가능)
+- DB 모델에 신규 컬럼 추가 시 `models._ensure_columns()`(playhouse migrator)가 기존 테이블에 자동 ADD COLUMN — peewee `create_tables`는 컬럼을 추가하지 않으므로 이 경로를 사용
 
 ---
 

@@ -229,6 +229,7 @@ with st.form("image_generate_form"):
             "replicate_api_key": api_keys.get("replicate", ""),
             "ideogram_api_key": api_keys.get("ideogram", ""),
             "image_dir": config.get("paths", {}).get("image_dir", "./data/images"),
+            "pricing": config.get("pricing", {}),
         }
 
         builder = ImagePromptBuilder()
@@ -265,7 +266,9 @@ with st.form("image_generate_form"):
                 local_path=img["local_path"],
                 width=img["width"],
                 height=img["height"],
+                quality=img.get("quality", ""),
                 cost_estimate=img["cost_estimate"],
+                cost_usd=img.get("cost_usd", 0),
                 is_selected=False,
             )
 
@@ -285,6 +288,7 @@ if db_images and not st.session_state["review_generated_images"]:
             "prompt_used": img.prompt_used,
             "engine": img.engine,
             "cost_estimate": img.cost_estimate,
+            "cost_usd": img.cost_usd,
             "width": img.width,
             "height": img.height,
             "_db_id": img.id,
@@ -355,6 +359,7 @@ with st.expander("프롬프트 직접 수정 후 재생성"):
                 "replicate_api_key": api_keys.get("replicate", ""),
                 "ideogram_api_key": api_keys.get("ideogram", ""),
                 "image_dir": config.get("paths", {}).get("image_dir", "./data/images"),
+                "pricing": config.get("pricing", {}),
             }
             generator = ImageGenerator(gen_config)
             try:
@@ -369,7 +374,9 @@ with st.expander("프롬프트 직접 수정 후 재생성"):
                     local_path=result["local_path"],
                     width=result["width"],
                     height=result["height"],
+                    quality=result.get("quality", ""),
                     cost_estimate=result["cost_estimate"],
+                    cost_usd=result.get("cost_usd", 0),
                     is_selected=False,
                 )
                 st.success("이미지 생성 완료!")
@@ -411,7 +418,9 @@ with st.expander("로컬 이미지 업로드"):
                     local_path=result["local_path"],
                     width=result["width"],
                     height=result["height"],
+                    quality="",
                     cost_estimate=0,
+                    cost_usd=0,
                     is_selected=False,
                 )
 
@@ -585,7 +594,10 @@ with st.expander("AI 수정 요청"):
 
             meta = result.get("meta", {})
             article.cost_estimate = article.cost_estimate + meta.get("cost_estimate", 0)
+            article.cost_usd = article.cost_usd + meta.get("cost_usd", 0)
             article.tokens_used = article.tokens_used + meta.get("tokens_used", 0)
+            article.input_tokens = article.input_tokens + meta.get("input_tokens", 0)
+            article.output_tokens = article.output_tokens + meta.get("output_tokens", 0)
             article.save()
 
             st.success("AI 수정 완료!")

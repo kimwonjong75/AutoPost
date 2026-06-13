@@ -2,6 +2,7 @@
 설정 페이지 — API 키, 발행 설정, 프롬프트 템플릿, ADB/IP
 """
 
+import datetime
 import sys
 import yaml
 import subprocess
@@ -13,7 +14,10 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from modules import pricing
 from modules.attachment_manager import AttachmentManager
+from modules.content_generator import ENGINE_CONFIGS
+from modules.image_generator import IMAGE_ENGINE_CONFIGS
 from modules.prompt_loader import (
     TEMPLATE_INFO_ID, TEMPLATE_PRODUCT_ID,
     DEFAULT_INFO_PROMPT, DEFAULT_PRODUCT_PROMPT,
@@ -56,7 +60,9 @@ st.header("설정")
 
 config = load_config()
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["API 키", "발행 설정", "프롬프트 템플릿", "ADB / IP", "블로그 계정", "상품 리스트"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+    ["API 키", "발행 설정", "프롬프트 템플릿", "ADB / IP", "블로그 계정", "상품 리스트", "단가 · 환율"]
+)
 
 # ══════════════════════════════════════════════
 # 탭 1: API 키
@@ -697,3 +703,131 @@ with tab6:
             st.rerun()
         else:
             st.warning("상품명을 입력하세요.")
+
+
+# ══════════════════════════════════════════════
+# 탭 7: 단가 · 환율
+# ══════════════════════════════════════════════
+with tab7:
+    st.subheader("단가 · 환율 관리")
+    st.caption(
+        "AI 글·이미지 비용 추정에 쓰이는 단가와 환율을 편집합니다. "
+        "비용은 USD 기준으로 저장되어, 환율만 바꿔도 과거 기록까지 즉시 재환산됩니다."
+    )
+
+    pricing_cfg = config.get("pricing", {}) or {}
+    fx_cfg = pricing_cfg.get("exchange_rate", {}) or {}
+
+    # ─── 환율 ───
+    st.markdown("**환율 (KRW per USD)**")
+    fx_col1, fx_col2 = st.columns([2, 1])
+    with fx_col1:
+        if "_fx_fetched" in st.session_state:
+            default_rate = float(st.session_state["_fx_fetched"])
+        else:
+            default_rate = float(fx_cfg.get("krw_per_usd", pricing.DEFAULT_KRW_PER_USD))
+        krw_per_usd = st.number_input(
+            "1 USD = ? KRW",
+            min_value=0.0,
+            value=default_rate,
+            step=10.0,
+            format="%.2f",
+        )
+    with fx_col2:
+        st.caption(f"출처: {st.session_state.get('_fx_source', fx_cfg.get('source', 'manual'))}")
+        st.caption(f"갱신: {fx_cfg.get('last_updated', '-')}")
+        if st.button("🔄 환율 자동 갱신", key="btn_fetch_fx", use_container_width=True):
+            live = pricing.fetch_live_exchange_rate()
+            if live:
+                st.session_state["_fx_fetched"] = live
+                st.session_state["_fx_source"] = "auto"
+                st.success(f"실시간 환율 ₩{live:,.2f}/USD — 저장 버튼으로 확정하세요.")
+                st.rerun()
+            else:
+                st.error("환율 조회 실패 — 기존 값을 유지합니다.")
+
+    # ─── 텍스트 모델 단가 ───
+    st.divider()
+    st.markdown("**텍스트 모델 단가 (USD / 1M tokens)**")
+    st.caption("입력값은 config에 override로 저장됩니다. 여기 없는 모델은 코드 기본 단가가 적용됩니다.")
+    text_price_inputs: dict = {}
+    for eng_key, eng_cfg in ENGINE_CONFIGS.items():
+        with st.expander(eng_cfg["label"]):
+            for m in eng_cfg["models"]:
+                cur = pricing.get_text_price(config, eng_key, m["id"])
+                tc1, tc2 = st.columns(2)
+                inp = tc1.number_input(
+                    f"{m['name']} · 입력", min_value=0.0, value=float(cur["input"]),
+                    step=0.05, format="%.4f", key=f"tp_in_{eng_key}_{m['id']}",
+                )
+                out = tc2.number_input(
+                    f"{m['name']} · 출력", min_value=0.0, value=float(cur["output"]),
+                    step=0.05, format="%.4f", key=f"tp_out_{eng_key}_{m['id']}",
+                )
+                text_price_inputs[f"{eng_key}/{m['id']}"] = (inp, out)
+
+    # ─── 이미지 단가 ───
+    st.divider()
+    st.markdown("**이미지 단가 (USD / 장)**")
+    image_price_inputs: dict = {}
+
+    with st.expander("GPT Image (사이즈 · 품질별)", expanded=True):
+        gpt_tbl: dict = {}
+        for size in ("1024x1024", "1536x1024", "1024x1536"):
+            st.caption(size)
+            q_cols = st.columns(3)
+            for qi, q in enumerate(("low", "medium", "high")):
+                cur = pricing.calc_image_cost_usd(config, "gpt_image", size, q)
+                val = q_cols[qi].number_input(
+                    q, min_value=0.0, value=float(cur), step=0.001,
+                    format="%.4f", key=f"img_gpt_{size}_{q}",
+                )
+                gpt_tbl.setdefault(size, {})[q] = val
+        image_price_inputs["gpt_image"] = gpt_tbl
+
+    with st.expander("기타 이미지 엔진 (장당 단가)"):
+        for eng in ("gemini_image", "flux_schnell", "flux_pro", "ideogram", "gemini_flash_image", "pollinations"):
+            cur = pricing.calc_image_cost_usd(config, eng)
+            label = IMAGE_ENGINE_CONFIGS.get(eng, {}).get("label", eng)
+            val = st.number_input(
+                label, min_value=0.0, value=float(cur), step=0.005,
+                format="%.4f", key=f"img_flat_{eng}",
+            )
+            image_price_inputs[eng] = {"_flat": val}
+
+    # ─── 예측 설정 ───
+    st.divider()
+    st.markdown("**예측 설정**")
+    pj1, pj2 = st.columns(2)
+    lookback = pj1.number_input(
+        "예측 일평균 산출 구간(일)", min_value=1, max_value=90,
+        value=pricing.get_lookback_days(config), key="proj_lookback_setting",
+    )
+    assumed = pj2.number_input(
+        "건당 비용 가정(₩, 실측 없을 때)", min_value=0.0,
+        value=float(pricing.get_assumed_cost_per_post_krw(config)),
+        step=50.0, key="proj_assumed_setting",
+    )
+
+    # ─── 저장 ───
+    st.markdown("")
+    if st.button("단가 · 환율 저장", type="primary", use_container_width=True, key="save_pricing"):
+        new_pricing = config.get("pricing", {}) or {}
+        new_pricing["exchange_rate"] = {
+            "krw_per_usd": krw_per_usd,
+            "source": st.session_state.get("_fx_source", fx_cfg.get("source", "manual")),
+            "last_updated": datetime.date.today().isoformat(),
+        }
+        new_pricing["text_models"] = {
+            k: {"input": v[0], "output": v[1]} for k, v in text_price_inputs.items()
+        }
+        new_pricing["image_models"] = image_price_inputs
+        new_pricing["projection"] = {
+            "lookback_days": int(lookback),
+            "assumed_cost_per_post_krw": assumed,
+        }
+        config["pricing"] = new_pricing
+        save_config(config)
+        st.session_state.pop("_fx_fetched", None)
+        st.session_state.pop("_fx_source", None)
+        st.success("단가·환율이 저장되었습니다.")

@@ -1,5 +1,6 @@
 import datetime
 import json
+import logging
 import os
 
 from peewee import (
@@ -14,6 +15,8 @@ from peewee import (
     SqliteDatabase,
     TextField,
 )
+
+logger = logging.getLogger(__name__)
 
 # DB 경로: 프로젝트 루트의 data/ 디렉토리
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "blog_auto.db")
@@ -58,8 +61,11 @@ class GeneratedArticle(BaseModel):
     tags = TextField(default="[]")               # JSON 배열 문자열
     image_prompt = TextField(null=True)
     status = CharField(default="생성완료")        # 생성완료, 검토완료, 발행완료, 실패
-    cost_estimate = FloatField(default=0)
-    tokens_used = IntegerField(default=0)
+    cost_estimate = FloatField(default=0)         # KRW (생성 시점 환율 스냅샷, 하위호환용)
+    cost_usd = FloatField(default=0)              # USD (환율 무관 SSOT) — 표시 시 ×환율
+    tokens_used = IntegerField(default=0)         # 입력+출력 합산
+    input_tokens = IntegerField(default=0)
+    output_tokens = IntegerField(default=0)
     created_at = DateTimeField(default=datetime.datetime.now)
 
     class Meta:
@@ -82,7 +88,9 @@ class GeneratedImage(BaseModel):
     local_path = CharField()
     width = IntegerField()
     height = IntegerField()
-    cost_estimate = FloatField(default=0)
+    quality = CharField(default="")               # gpt_image 등 품질 옵션 (단가 계산용)
+    cost_estimate = FloatField(default=0)         # KRW (생성 시점 환율 스냅샷, 하위호환용)
+    cost_usd = FloatField(default=0)              # USD (환율 무관 SSOT) — 표시 시 ×환율
     is_selected = BooleanField(default=False)
     created_at = DateTimeField(default=datetime.datetime.now)
 
@@ -110,10 +118,42 @@ class PublishLog(BaseModel):
         table_name = "publish_logs"
 
 
+# 기존 테이블에 추가돼야 하는 신규 컬럼 (peewee는 자동 마이그레이션 미지원)
+_NEW_COLUMNS = {
+    GeneratedArticle: ("cost_usd", "input_tokens", "output_tokens"),
+    GeneratedImage: ("quality", "cost_usd"),
+}
+
+
+def _ensure_columns():
+    """이미 생성된 테이블에 신규 컬럼이 없으면 playhouse migrator로 추가한다."""
+    from playhouse.migrate import SqliteMigrator, migrate
+
+    migrator = SqliteMigrator(db)
+    for model, columns in _NEW_COLUMNS.items():
+        table = model._meta.table_name
+        try:
+            existing = {c.name for c in db.get_columns(table)}
+        except Exception:
+            continue
+        ops = [
+            migrator.add_column(table, col, getattr(model, col))
+            for col in columns
+            if col not in existing
+        ]
+        if ops:
+            try:
+                migrate(*ops)
+                logger.info("스키마 마이그레이션: %s에 %d개 컬럼 추가", table, len(ops))
+            except Exception as exc:
+                logger.warning("스키마 마이그레이션 실패 (%s): %s", table, exc)
+
+
 def init_db():
-    """테이블 생성 (없으면 자동 생성)"""
+    """테이블 생성 (없으면 자동 생성) 후 신규 컬럼 마이그레이션."""
     db.connect(reuse_if_open=True)
     db.create_tables([Attachment, GeneratedArticle, GeneratedImage, PublishLog])
+    _ensure_columns()
     return db
 
 
