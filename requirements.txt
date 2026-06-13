@@ -25,3 +25,6 @@ requests==2.32.0
 pyyaml==6.0.2
 apscheduler==3.10.4
 pdfplumber==0.11.0                 # PDF 텍스트 추출 (참고자료용)
+
+# === 빌드/호환 ===
+setuptools==82.0.1                 # Python 3.12+ distutils 제거 대응 (undetected-chromedriver가 distutils 사용)

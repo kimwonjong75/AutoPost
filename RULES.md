@@ -23,6 +23,11 @@
 | 스케줄링 | apscheduler 3.10.4 | 예약 작업 |
 | 클립보드 | pyperclip 1.9.0 | 봇 탐지 우회 입력 |
 
+### 실행 환경
+
+- **런타임: Python 3.12** — 핀 버전(Pillow 10.4.0, Streamlit 1.40.0 등)이 3.12 대상이며 3.13/3.14는 일부 패키지 wheel 부재로 설치 실패. `setuptools`는 3.12에서 제거된 `distutils`를 undetected-chromedriver가 참조하므로 `requirements.txt`에 포함
+- **실행: `실행.bat` 더블클릭** — `.venv`가 없으면 Python 3.12 확인(없으면 winget 설치) → venv 생성 → `pip install -r requirements.txt`까지 자동 수행 후 `streamlit run app.py` 실행. 이미 설정돼 있으면 곧바로 실행
+
 ### 데이터 소스
 
 - **SQLite** (`data/blog_auto.db`): 생성 기사·이미지·발행 로그 영구 저장
